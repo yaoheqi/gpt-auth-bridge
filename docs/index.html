@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChatGPT Session -> sub2api / CPA / Cockpit / Codex</title>
+    <meta name="theme-color" content="#24505a" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" sizes="any" />
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#converter-workspace" aria-label="ChatGPT Session Converter 首页">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <span class="brand-copy">
+            <strong>会话转换工作台</strong>
+            <small>Session Converter</small>
+          </span>
+        </a>
+        <nav class="top-nav" aria-label="主要功能">
+          <button class="top-nav-item" type="button" data-format="sub2api" data-format-group="converter" aria-pressed="true">格式转换</button>
+          <button class="top-nav-item" type="button" data-format="sub2api-tools" aria-pressed="false">批处理工具</button>
+          <button class="top-nav-item" type="button" data-format="protocol-login" aria-pressed="false">协议登录</button>
+        </nav>
+        <div class="meta-row" aria-label="处理方式">
+          <button type="button" class="top-nav-item clear-all-data" id="clear-browser-data" title="删除所有账号和结果，包括自定义代理、Sub2API、CPA 配置">清空所有数据</button>
+          <span class="meta-chip">浏览器本地解析</span>
+          <span class="meta-chip">服务器仅临时处理</span>
+          <span class="meta-chip" id="browser-storage-status">数据仅保存在此浏览器</span>
+          <div class="clear-data-actions" aria-label="清理浏览器数据">
+            <button type="button" class="top-nav-item" id="clear-login-data" title="删除账号、Session、RT 和结果，保留代理及推送配置">清空登录数据</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="app">
+      <div class="task-concurrency">
+        <span>固定并发 <strong id="task-concurrency-value">加载中…</strong></span>
+        <small>登录、浏览器辅助验证、2FA 重设、测活和退出会话共用，由服务端统一设置。</small>
+      </div>
+      <div class="session-monitor" aria-label="Session 定时测活">
+        <span id="session-monitor-status" role="status">定时测活已关闭。</span>
+        <small>开启后每分钟检查一次，失效后协议重登并更新非 free 账号。同一服务器上每个账号由一个浏览器负责，断线后约 3 分钟可接管；账号已删除、密码或 2FA 错误会停止重试。需保留页面打开，后台休眠会延迟检查。</small>
+        <details id="monitor-skipped" hidden><summary>已跳过的账号</summary><ul id="monitor-skipped-list"></ul></details>
+      </div>
+      <section class="toolbar format-toolbar" id="format-toolbar" aria-label="输出控制">
+        <div class="format-rail" id="format-rail">
+          <div class="segmented" id="format-list" role="tablist" aria-label="输出格式" aria-orientation="horizontal">
+            <button id="formatSub2apiTab" type="button" role="tab" aria-selected="true" aria-controls="converter-workspace" tabindex="0" data-format="sub2api" aria-pressed="true">sub2api</button>
+            <button id="formatCpaTab" type="button" role="tab" aria-selected="false" aria-controls="converter-workspace" tabindex="-1" data-format="cpa" aria-pressed="false">CPA</button>
+            <button id="formatCockpitTab" type="button" role="tab" aria-selected="false" aria-controls="converter-workspace" tabindex="-1" data-format="cockpit" aria-pressed="false">Cockpit</button>
+            <button id="formatCodexTab" type="button" role="tab" aria-selected="false" aria-controls="converter-workspace" tabindex="-1" data-format="codex" aria-pressed="false">Codex</button>
+          </div>
+        </div>
+        <div class="actions" id="converter-actions">
+          <div class="tool-operation-buttons" id="tool-operation-buttons" role="tablist" aria-label="批处理功能" aria-orientation="horizontal">
+            <button class="button button-secondary tool-operation-button" id="operation-json-to-txt" type="button" role="tab" aria-selected="true" aria-controls="sub2api-tool-config" tabindex="0" data-operation="json-to-txt" aria-pressed="true">JSON 转逐行 TXT</button>
+            <button class="button button-secondary tool-operation-button" id="operation-split" type="button" role="tab" aria-selected="false" aria-controls="sub2api-tool-config" tabindex="-1" data-operation="split" aria-pressed="false">按 mail.csv 拆分账号</button>
+          </div>
+          <button class="button button-secondary" id="copy-output" type="button" disabled>复制输出</button>
+          <label class="button button-secondary" for="download-scope">下载范围
+            <select id="download-scope" aria-label="下载范围">
+              <option value="200" selected>HTTP 200（默认）</option>
+              <option value="non200">全部非 200</option>
+              <option value="all">全部账号</option>
+            </select>
+          </label>
+          <button class="button button-primary" id="download-output" type="button" disabled>下载 JSON</button>
+          <button class="button button-secondary hidden" id="push-converted" type="button" disabled>推送转换结果</button>
+        </div>
+        <div id="converter-push-slot" class="converter-push-slot"></div>
+      </section>
+
+      <div class="tool-config output-config hidden" id="sub2api-output-config">
+        <label class="wide">
+          模型列表（逗号或空格分隔）
+          <input id="sub2api-models" type="text" value="gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra" />
+        </label>
+        <label>
+          导出账号并发
+          <input id="sub2api-concurrency" type="number" min="1" max="1000" step="1" value="50" />
+        </label>
+        <label>
+           负载因子（load_factor）
+          <input id="sub2api-load-factor" type="number" min="1" max="10000" step="1" value="1000" />
+        </label>
+        <label>
+          优先级
+          <input id="sub2api-priority" type="number" min="1" step="1" value="1" />
+        </label>
+        <label>
+          Codex 指纹收敛
+          <select id="sub2api-fingerprint-mode">
+            <option value="off">关闭（透传）</option>
+            <option value="device">仅设备</option>
+            <option value="session" selected>设备+会话</option>
+            <option value="full">完全收敛</option>
+          </select>
+        </label>
+      </div>
+
+      <section class="login-workbench hidden" id="login-workbench" aria-labelledby="login-title">
+        <header class="login-header">
+          <div class="login-heading">
+            <div class="login-title-row"><h2 id="login-title">协议登录并转换 RT</h2><span class="login-count" id="login-account-count">0 个账号</span></div>
+            <p>按账号实时显示登录、工作区加入和 RT 转换进度。</p>
+          </div>
+          <div id="login-push-slot">
+            <div class="push-controls" id="push-controls" aria-label="远程推送" aria-describedby="push-hint">
+              <div class="monitor-controls">
+                <span class="push-label" aria-hidden="true">测活</span>
+                <fieldset id="session-monitor-choice" class="push-target">
+                  <legend class="sr-only">定时测活</legend>
+                  <label><input type="radio" name="session-monitor" value="off" checked />关闭</label>
+                  <label><input type="radio" name="session-monitor" value="on" />开启</label>
+                </fieldset>
+              </div>
+              <div class="push-choice-controls">
+                <span class="push-label" aria-hidden="true">推送</span>
+                <fieldset id="push-target" class="push-target">
+                  <legend class="sr-only">推送目标</legend>
+                  <label><input type="radio" name="push-target" value="none" checked />不推送</label>
+                  <label><input type="radio" name="push-target" value="sub2api" />Sub2API</label>
+                  <label><input type="radio" name="push-target" value="cpa" />CPA</label>
+                </fieldset>
+              </div>
+              <div class="push-config-actions">
+                <button class="button button-secondary" id="open-sub2-push-config" type="button">Sub2API 配置</button>
+                <button class="button button-secondary" id="open-cpa-push-config" type="button">CPA 配置</button>
+              </div>
+              <span class="sr-only" id="push-hint">配置加密保存在当前浏览器。</span>
+            </div>
+          </div>
+        </header>
+        <div class="login-layout">
+          <aside class="login-steps" aria-label="协议登录步骤">
+            <strong>执行步骤</strong>
+            <ol class="login-step-list" id="login-step-list">
+              <li class="login-step" data-login-stage="0"><span class="login-step-marker">1</span><span class="login-step-label">打开官网</span></li>
+              <li class="login-step" data-login-stage="1"><span class="login-step-marker">2</span><span class="login-step-label">输入账号</span></li>
+              <li class="login-step" data-login-stage="2"><span class="login-step-marker">3</span><span class="login-step-label">输入密码</span></li>
+              <li class="login-step" data-login-stage="3"><span class="login-step-marker">4</span><span class="login-step-label">输入 2FA</span></li>
+              <li class="login-step" data-login-stage="4"><span class="login-step-marker">5</span><span class="login-step-label">登录成功</span></li>
+              <li class="login-step" data-login-stage="5"><span class="login-step-marker">6</span><span class="login-step-label">授权工作区</span></li>
+              <li class="login-step" data-login-stage="6"><span class="login-step-marker">7</span><span class="login-step-label">转为 RT</span></li>
+            </ol>
+          </aside>
+          <div class="login-main">
+            <div class="login-account-input-wrap">
+              <label class="login-account-label" for="login-accounts">
+                账号输入
+                <small>每行一个账号，格式：账号----密码----2fa、账号---密码---2fa 或 账号--密码--2fa</small>
+                <textarea id="login-accounts" spellcheck="false" autocomplete="off" placeholder="email@example.com----password----TOTP_SECRET"></textarea>
+              </label>
+              <div class="login-account-actions">
+                <button class="button button-secondary" id="import-login-file" type="button" title="导入 TXT 账号文件，每行一个，追加到输入框">导入文件</button>
+                <input class="hidden" id="login-file-input" type="file" accept=".txt,text/plain" multiple />
+                <button class="button button-secondary" id="protocol-logout-all" type="button" title="优先复用浏览器缓存 Session，退出全部 ChatGPT 会话">退出全部会话</button>
+                <button class="button button-secondary" id="self-leave-workspaces" type="button" title="使用输入账号自己的令牌，退出已加入的非 owner 团队工作区">自踢</button>
+                <button class="button button-secondary" id="reset-login-totp" type="button" title="先禁用旧 2FA，再生成并验证新 2FA">重设 2FA</button>
+              </div>
+            </div>
+            <section class="login-reset-output hidden" id="login-reset-output" aria-labelledby="login-reset-output-title">
+              <div class="login-reset-output-head">
+                <span id="login-reset-output-title">最新账号凭据</span>
+                <button class="button button-secondary" id="copy-login-reset-output" type="button">复制</button>
+              </div>
+              <small>换绑成功后生成。每行格式：账号----密码----最新 2FA；请立即保存。</small>
+              <pre id="login-reset-credentials"></pre>
+            </section>
+            <div class="login-controls">
+              <fieldset id="login-workspace-mode" class="login-mode-group">
+                <legend>登录模式</legend>
+                <div class="login-mode-options">
+                  <label class="login-mode-option"><input type="radio" name="login-workspace-mode" value="session" />仅协议登录</label>
+                  <label class="login-mode-option"><input type="radio" name="login-workspace-mode" value="all" checked />全部工作区 RT</label>
+                </div>
+              </fieldset>
+            </div>
+            <section class="login-proxy-card" aria-labelledby="login-proxy-title">
+              <div class="login-proxy-head">
+                <div class="login-proxy-title">
+                  <span id="login-proxy-title">协议登录网络</span>
+                  <small>配置只保存在当前浏览器，不写入服务器。可选择直连、本地代理或代理池。</small>
+                </div>
+              </div>
+              <div class="login-proxy-options">
+                <fieldset id="login-proxy-mode" class="login-mode-group">
+                  <legend>出口模式</legend>
+                  <div class="login-mode-options">
+                    <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="direct" checked />直连</label>
+                    <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="local" />本地代理</label>
+                    <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="builtin" />内置代理池</label>
+                    <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="pool" />自定义代理池</label>
+                  </div>
+                </fieldset>
+                <label id="login-proxy-local-wrap" class="hidden">本地代理端口
+                  <input id="login-proxy-local-port" type="number" min="1" max="65535" step="1" value="7890" inputmode="numeric" />
+                </label>
+                <label id="login-proxy-custom-wrap" class="hidden">代理池地址
+                  <textarea id="login-proxy-pool" rows="3" spellcheck="false" placeholder="每行一个代理，例如 http://user:pass@host:port"></textarea>
+                </label>
+              </div>
+              <div class="status-line" id="login-proxy-status" role="status" aria-live="polite">当前使用直连。</div>
+            </section>
+            <div class="login-workbench-actions">
+              <button class="button button-primary" id="start-protocol-login" type="button">开始获取全部 RT</button>
+              <button class="button button-secondary" id="export-login-sessions" type="button" disabled>下载 Session TXT</button>
+              <button class="button button-secondary" id="export-login-personal" type="button" disabled>下载个人 sub2api</button>
+              <button class="button button-secondary" id="export-login-business" type="button" disabled>下载 Business sub2api</button>
+            </div>
+            <div class="status-line" id="login-status" role="status" aria-live="polite">登录服务未开始。</div>
+            <div id="login-push-feedback-slot">
+              <div id="push-feedback" class="push-feedback" hidden>
+                <div class="push-feedback-head"><div class="status-line" id="push-status" role="status" aria-live="polite"></div><button class="button button-secondary hidden" id="retry-push" type="button" disabled>重试失败项</button></div>
+                <details id="push-result-details" hidden><summary>推送明细</summary><ul id="push-results"></ul></details>
+              </div>
+            </div>
+
+            <section class="login-progress" aria-labelledby="login-progress-title">
+              <div class="login-progress-head">
+                <div>
+                  <h3 id="login-progress-title">账号进度</h3>
+                  <p>日志只展示步骤和结果，不展示密码或 2FA 密钥。</p>
+                </div>
+                <span class="login-progress-summary" id="login-progress-summary">等待 0 · 进行中 0 · 成功 0 · 失败 0</span>
+              </div>
+              <div class="login-overall-progress">
+                <div class="login-overall-progress-head">
+                  <span id="login-completed-count">已完成 0/0</span>
+                  <span class="login-overall-percent" id="login-overall-percent">0%</span>
+                </div>
+                <div class="login-progress-track" aria-label="全部账号进度"><div class="login-progress-bar" id="login-overall-bar" style="width:0%"></div></div>
+              </div>
+              <div class="login-progress-list" id="login-progress-list" aria-live="polite">
+                <div class="login-progress-empty">输入账号并开始后，这里将显示每个账号的实时进度。</div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace" id="converter-workspace" role="tabpanel" aria-labelledby="formatSub2apiTab" tabindex="0">
+        <section class="panel" aria-labelledby="input-title">
+          <div class="panel-head">
+            <div>
+              <h2 id="input-title">Session JSON</h2>
+              <p id="input-subtitle">粘贴 ChatGPT Web session，或拖入一个或多个 JSON 文件。</p>
+            </div>
+          </div>
+            <div class="panel-body">
+            <div class="session-guide" id="session-guide">
+              <strong>Session 数据从这里获取</strong>
+              <p>
+                先在浏览器登录 ChatGPT，然后打开
+                <a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noreferrer">https://chatgpt.com/api/auth/session</a>
+                ，复制页面显示的整段 JSON，粘贴到下方输入框。
+              </p>
+              <p class="session-warning">OpenAI 已限制通过 Web session 转换导入来跳过 Codex OAuth add phone / 手机绑定验证；转换结果不能绕过该验证。</p>
+              <p class="session-warning">这段 JSON 包含 accessToken 和 sessionToken，等同敏感登录凭证，不要发给别人。</p>
+            </div>
+            <input class="hidden" id="file-input" type="file" accept=".json,.txt,application/json,text/plain" multiple />
+            <div class="input-actions">
+              <button class="button button-secondary" id="pick-files" type="button">选择文件</button>
+              <button class="button button-secondary" id="load-example" type="button">填入示例结构</button>
+              <button class="button button-ghost" id="clear-input" type="button">清空</button>
+            </div>
+            <div class="tool-config hidden" id="sub2api-tool-config" role="tabpanel" aria-labelledby="operation-json-to-txt" aria-hidden="true" tabindex="0">
+              <input type="hidden" id="sub2api-operation" value="json-to-txt" />
+              <label class="hidden" id="split-scope-label">
+                输出组
+                <select id="split-scope">
+                  <option value="matched">匹配邮箱</option>
+                  <option value="unmatched">未匹配邮箱</option>
+                </select>
+              </label>
+              <label class="wide hidden" id="mail-input-label">
+                mail.csv 内容
+                <textarea id="mail-input" spellcheck="false" placeholder="email@example.com"></textarea>
+                <input class="hidden" id="mail-file-input" type="file" accept=".csv,text/csv" />
+                <button class="button button-secondary" id="pick-mail-file" type="button">选择 mail.csv</button>
+              </label>
+            </div>
+            <div class="input-dropzone" id="input-dropzone">
+              <textarea
+                id="session-input"
+                spellcheck="false"
+                placeholder='{"user":{"email":"mark@example.com"},"expires":"2026-08-06T14:29:36.155Z","account":{"id":"...","planType":"plus"},"accessToken":"...","sessionToken":"..."}'
+              ></textarea>
+            </div>
+            <div class="status-line" id="input-status">等待输入。</div>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="output-title">
+          <div class="panel-head">
+            <div>
+              <h2 id="output-title">转换结果</h2>
+              <p id="output-subtitle">当前输出为 sub2api 导入 JSON。</p>
+            </div>
+            <div class="output-head-actions">
+              <button class="button button-secondary hidden" id="logout-all-sessions" type="button" disabled>退出全部会话</button>
+              <label class="health-filter" id="health-filter-label" for="health-filter">账号筛选
+                <select id="health-filter" aria-label="转换结果账号筛选">
+                  <option value="200" selected>HTTP 200</option>
+                  <option value="non200">非 200</option>
+                </select>
+              </label>
+              <label class="health-filter hidden" id="usage-filter-label" for="usage-filter">用量筛选
+                <select id="usage-filter" aria-label="账号用量筛选">
+                  <option value="unused" selected>全部窗口未使用</option>
+                  <option value="used">有用量</option>
+                  <option value="unknown">无用量数据</option>
+                  <option value="all">全部用量</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="panel-body">
+            <p class="notice" id="cpa-notice">
+              本工具不能绕过 Codex OAuth add phone / 手机绑定验证。ChatGPT Web session 一般没有 `refresh_token`；缺少真实 `id_token` 时 CPA、Cockpit、Codex 和 AxonHub 会构造 Codex 可解析的占位 JWT claims。Codex 和 Codex-Manager 会保留空 `refresh_token`；AxonHub 缺少真实 `refresh_token` 时会写入占位值。
+            </p>
+            <div class="summary" aria-label="转换统计">
+              <div class="stat">
+                <div class="stat-value" id="stat-count">0</div>
+                <div class="stat-label">账号数</div>
+              </div>
+              <div class="stat">
+                <div class="stat-value" id="stat-format">sub2api</div>
+                <div class="stat-label">输出格式</div>
+              </div>
+              <div class="stat">
+                <div class="stat-value" id="stat-errors">0</div>
+                <div class="stat-label">跳过项</div>
+              </div>
+            </div>
+            <div class="status-line" id="health-status">等待自动测活。</div>
+            <pre class="logout-progress hidden" id="logout-progress" aria-live="polite"></pre>
+             <div class="accounts health-table" id="health-table" aria-label="测活账号列表"><table><thead><tr><th scope="col">名称</th><th scope="col">邮箱</th><th scope="col">状态</th><th scope="col">5 小时</th><th scope="col">7 天</th><th scope="col">更新时间</th><th scope="col">来源</th></tr></thead><tbody id="health-body"><tr><td colspan="7" class="empty">等待测活。</td></tr></tbody></table></div>
+            <div class="accounts account-preview hidden" aria-label="账号预览">
+              <table>
+                <colgroup>
+                  <col class="col-name" />
+                  <col class="col-email" />
+                  <col class="col-expiry" />
+                  <col class="col-type" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th scope="col">名称</th>
+                    <th scope="col">邮箱</th>
+                    <th scope="col">过期时间</th>
+                    <th scope="col">来源</th>
+                  </tr>
+                </thead>
+                <tbody id="account-body">
+                  <tr>
+                    <td colspan="4" class="empty">暂无可转换账号。</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="issues" id="issues"></div>
+            <textarea id="output" readonly spellcheck="false" placeholder="转换后会显示 JSON。"></textarea>
+            <div class="split-downloads hidden" id="split-downloads" aria-label="邮箱拆分下载">
+              <button class="button button-primary" id="download-matched" type="button" disabled>下载匹配邮箱 (0)</button>
+              <button class="button button-secondary" id="download-unmatched" type="button" disabled>下载未匹配邮箱 (0)</button>
+            </div>
+            <div class="status-line" id="output-status">暂无输出。</div>
+            <div id="converter-push-feedback-slot"></div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div class="login-modal hidden" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title" aria-describedby="login-modal-message" aria-hidden="true" tabindex="-1">
+      <div class="login-modal-card" role="document">
+        <strong id="login-modal-title">需要完成人工验证</strong>
+        <div class="status-line" id="login-modal-message">登录服务返回了手机号或验证码验证步骤。当前流程不会在此页面收集或代提交这些信息，请检查账号凭据后重新启动协议登录。</div>
+        <div class="login-workbench-actions">
+          <button class="button button-primary" id="close-login-modal" type="button">关闭提示</button>
+        </div>
+      </div>
+    </div>
+
+    <dialog class="push-config" id="sub2-push-dialog" aria-labelledby="login-sub2-title">
+      <div class="push-dialog-heading"><div><h3 id="login-sub2-title">Sub2API 推送配置</h3><p>仅加密保存在当前浏览器</p></div><button type="button" class="button button-secondary" data-close-dialog="sub2-push-dialog" aria-label="关闭 Sub2API 配置">关闭</button></div>
+      <div class="push-config-body">
+        <div class="push-connection-fields">
+          <label>服务地址<input id="login-sub2-base-url" type="url" autocomplete="off" placeholder="https://sub2.example.com" /></label>
+          <label>Admin Key<span class="login-sub2-secret"><input id="login-sub2-admin-key" type="password" autocomplete="off" placeholder="填写管理密钥" /><button class="button button-secondary" id="toggle-login-sub2-key" type="button">显示</button></span></label>
+        </div>
+        <section class="push-group-section" aria-labelledby="sub2-groups-title">
+          <div class="push-section-heading"><div><strong id="sub2-groups-title">推送分组</strong><span id="login-sub2-group-count">已选 0 个</span></div><button class="button button-secondary" id="load-login-sub2-groups" type="button">读取分组</button></div>
+          <div id="login-sub2-groups" class="push-group-list" role="group" aria-label="Sub2API 推送分组"><p>填写地址和密钥后，读取可选分组。</p></div>
+        </section>
+        <details class="push-account-options">
+          <summary>账号参数 <span>导出与推送共用</span></summary>
+          <div class="login-sub2-grid">
+            <label>每账号并发<input id="login-sub2-concurrency" type="number" min="1" max="100" step="1" value="50" /></label>
+            <label>优先级<input id="login-sub2-priority" type="number" min="1" max="100" step="1" value="1" /></label>
+            <label>负载因子<input id="login-sub2-load-factor" type="number" min="1" max="10000" step="1" value="1" /></label>
+            <label>指纹收敛<select id="login-sub2-fingerprint-mode"><option value="off">关闭（透传）</option><option value="device">仅设备</option><option value="session">设备+会话</option><option value="full" selected>完全收敛</option></select></label>
+            <label class="wide">模型（逗号或换行）<textarea id="login-sub2-models" rows="3" spellcheck="false">gpt-5.5&#10;gpt-5.6-sol&#10;gpt-5.6-terra</textarea></label>
+          </div>
+        </details>
+      </div>
+      <div class="push-config-footer"><div class="status-line" id="login-sub2-status" role="status" aria-live="polite">填写连接信息并选择推送分组。</div><button class="button button-primary" id="save-login-sub2-config" type="button">保存配置</button></div>
+    </dialog>
+
+    <dialog class="push-config push-config-cpa" id="cpa-push-dialog" aria-labelledby="cpa-push-title">
+      <div class="push-dialog-heading"><div><h3 id="cpa-push-title">CPA 推送配置</h3><p>仅加密保存在当前浏览器</p></div><button type="button" class="button button-secondary" data-close-dialog="cpa-push-dialog" aria-label="关闭 CPA 配置">关闭</button></div>
+      <div class="push-config-body">
+        <div class="push-connection-fields">
+          <label>服务地址<input id="cpa-base-url" type="url" autocomplete="off" placeholder="https://cpa.example.com" /></label>
+          <label>Management Key<span class="login-sub2-secret"><input id="cpa-management-key" type="password" autocomplete="off" placeholder="填写管理密钥" /><button class="button button-secondary" id="toggle-cpa-key" type="button">显示</button></span></label>
+        </div>
+        <div class="push-config-note"><strong>账号分组</strong><p>标准 CPA 按认证文件管理账号，不提供 Sub2API 式分组。推送时将每个账号保存为独立的 Codex JSON 文件。</p></div>
+        <div class="status-line" id="cpa-config-status" role="status" aria-live="polite">尚未配置 CPA。</div>
+      </div>
+      <div class="push-config-footer"><button class="button button-secondary" id="check-cpa-config" type="button">测试连接</button><button class="button button-primary" id="save-cpa-config" type="button">保存配置</button></div>
+    </dialog>
+
+    <div class="push-toast" id="push-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+
+    <script src="/browser-store.js"></script>
+    <script type="module" src="/app.js"></script>
+
+  </body>
+</html>
