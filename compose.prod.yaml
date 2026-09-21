@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: gpt-session-converter:local
-    container_name: gpt-session-converter
+    image: gpt-auth-bridge:local
+    container_name: gpt-auth-bridge
     restart: unless-stopped
     init: true
     environment:

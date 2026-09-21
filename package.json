@@ -1,5 +1,5 @@
 {
-  "name": "gpt-session-2-cpa-and-sub2api",
+  "name": "gpt-auth-bridge",
   "private": true,
   "scripts": {
     "start": "node server.js",
@@ -14,7 +14,7 @@
     "node": ">=22.19.0"
   },
   "type": "module",
-  "description": "Session conversion and protocol login with browser-owned data",
+  "description": "ChatGPT authentication, session management and CPA/Sub2API integration with browser-owned data",
   "dependencies": {
     "express": "4.22.3",
     "fetch-cookie": "^3.2.0",

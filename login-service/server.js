@@ -5663,6 +5663,6 @@ export async function startApplication() {
     throw error;
   });
   sub2ApiPushService.start();
-  console.log(`GPTSession2CPAandSub2API: http://${process.env.HOST || '127.0.0.1'}:${PORT} · Browser storage · 凭据模式=${getAuthMode()}`);
+  console.log(`GPTAuthBridge: http://${process.env.HOST || '127.0.0.1'}:${PORT} · Browser storage · 凭据模式=${getAuthMode()}`);
   return lifecycle;
 }

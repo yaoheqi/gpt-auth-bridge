@@ -56,7 +56,7 @@ test('one entrypoint serves the UI, canonical/legacy APIs, SSE and browser-owned
     app = await startApp(runtime, { TASK_CONCURRENCY: '3', SENTINEL_BROWSER_CONCURRENCY: '1' });
     const page = await fetch(`${app.url}/`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /会话转换工作台/);
+    assert.match(await page.text(), /GPTAuthBridge/);
     assert.equal((await fetch(`${app.url}/login`)).status, 404);
     assert.equal((await fetch(`${app.url}/auth.html`)).status, 404);
     assert.equal((await fetch(`${app.url}/portal.css`)).status, 404);

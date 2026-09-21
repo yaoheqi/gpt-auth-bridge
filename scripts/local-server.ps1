@@ -19,8 +19,8 @@ $hash = [System.Security.Cryptography.SHA256]::Create()
 try {
   $projectKey = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($ProjectRoot.ToLowerInvariant())))).Replace('-', '').Substring(0, 24)
 } finally { $hash.Dispose() }
-$Marker = "--gpt-session-local=$projectKey"
-$mutex = New-Object System.Threading.Mutex($false, "Local\GPTSessionLocal-$projectKey")
+$Marker = "--gpt-auth-bridge-local=$projectKey"
+$mutex = New-Object System.Threading.Mutex($false, "Local\GPTAuthBridgeLocal-$projectKey")
 $locked = $false
 $startedProcess = $null
 $exitCode = 0

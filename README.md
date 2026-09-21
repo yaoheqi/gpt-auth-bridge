@@ -1,6 +1,6 @@
-# GPTSession2CPAandSub2API
+# GPTAuthBridge
 
-一个 Node.js 应用提供 Session 格式转换、协议登录、RT 导出和 Sub2API / CPA 推送。只有一份根目录 `.env`、一个启动入口和一个 HTTP 端口。
+ChatGPT 账号认证与会话管理工具，支持协议登录、多工作区 RT 获取、会话转换、自动测活及 CPA / Sub2API 推送。仓库名与 npm 包名为 `gpt-auth-bridge`；应用使用 Node.js，只有一份根目录 `.env`、一个启动入口和一个 HTTP 端口。
 
 基于 [gtxx3600/GPTSession2CPAandSub2API](https://github.com/gtxx3600/GPTSession2CPAandSub2API) 开发，使用 [MIT 许可证](LICENSE)。原始贡献者与历史整理说明见 [AUTHORS.md](AUTHORS.md)。
 
