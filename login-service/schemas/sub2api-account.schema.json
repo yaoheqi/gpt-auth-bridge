@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/schemas/sub2api-account.schema.json",
+  "title": "Sub2API Account",
+  "type": "object",
+  "required": ["name", "platform", "type", "credentials"],
+  "properties": {
+    "name": { "type": "string" },
+    "platform": { "const": "openai" },
+    "type": { "const": "oauth" },
+    "credentials": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["access_token", "refresh_token"],
+          "properties": {
+            "access_token": { "type": "string", "minLength": 1 },
+            "refresh_token": { "type": "string", "minLength": 1 },
+            "id_token": { "type": "string" },
+            "chatgpt_account_id": { "type": "string" },
+            "account_id": { "type": "string" },
+            "email": { "type": "string" },
+            "plan_type": { "type": "string" },
+            "model_mapping": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["auth_mode", "agent_runtime_id", "agent_private_key"],
+          "properties": {
+            "auth_mode": { "type": "string" },
+            "agent_runtime_id": { "type": "string", "minLength": 1 },
+            "agent_private_key": { "type": "string", "minLength": 1 },
+            "chatgpt_account_id": { "type": "string" },
+            "email": { "type": "string" },
+            "model_mapping": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "concurrency": { "type": "number" },
+    "priority": { "type": "number" },
+    "load_factor": { "type": "integer", "minimum": 1, "maximum": 10000 },
+    "rate_multiplier": { "type": "number" },
+    "extra": {
+      "type": "object",
+      "properties": {
+        "codex_fingerprint_mode": { "enum": ["off", "device", "session", "full"] }
+      }
+    },
+    "auto_pause_on_expired": { "type": "boolean" }
+  }
+}
