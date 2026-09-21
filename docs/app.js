@@ -49,6 +49,10 @@ import { splitPasswordTotpLine } from './login-account-format.js';
     logoutRun: 0,
     loginLastResponse: null,
     loginLastRtKind: "all",
+    // The next protocol/RT run can target only accounts that failed in the
+    // previous run. Keep IDs and public identity only; credentials remain in
+    // the encrypted input field/browser account snapshot.
+    loginRetry: null,
     loginProgress: new Map(),
     loginSensitiveValues: [],
     loginRenderFrame: 0,
@@ -2036,10 +2040,77 @@ import { splitPasswordTotpLine } from './login-account-format.js';
   }
 
   function updateLoginExportActions() {
-    elements.startProtocolLogin.textContent = getLoginWorkspaceMode() === "session" ? "开始协议登录" : "开始获取全部 RT";
+    const retryCount = Number(state.loginRetry?.ids?.length || 0);
+    elements.startProtocolLogin.textContent = retryCount
+      ? `重试失败账号 (${retryCount})`
+      : (getLoginWorkspaceMode() === "session" ? "开始协议登录" : "开始获取全部 RT");
     elements.exportLoginPersonal.disabled = state.loginPersonalIds.length === 0;
     elements.exportLoginBusiness.disabled = state.loginBusinessIds.length === 0 || getLoginWorkspaceMode() !== "all";
     updatePushControls();
+  }
+
+  function loginInputIdentity(lines) {
+    return [...new Set(lines.map(line => loginAccountEmail(line).toLowerCase()).filter(Boolean))].sort();
+  }
+
+  function clearLoginRetry() {
+    if (!state.loginRetry) return;
+    state.loginRetry = null;
+    updateLoginExportActions();
+    persistBrowserWorkspace();
+  }
+
+  function pendingLoginRetry(lines, workspaceMode) {
+    const retry = state.loginRetry;
+    if (!retry || !Array.isArray(retry.ids) || !retry.ids.length) return null;
+    if (retry.workspaceMode !== workspaceMode) {
+      clearLoginRetry();
+      return null;
+    }
+    const currentEmails = new Set(loginInputIdentity(lines));
+    const sourceEmails = Array.isArray(retry.inputEmails) ? retry.inputEmails : [];
+    // Editing the account list starts a new batch. Proxy controls can still be
+    // changed between attempts without invalidating the failed-account set.
+    if (sourceEmails.length && (sourceEmails.length !== currentEmails.size || sourceEmails.some(email => !currentEmails.has(email)))) {
+      clearLoginRetry();
+      return null;
+    }
+    const accounts = (retry.accounts || []).filter(item => item?.id && (!item.email || currentEmails.has(String(item.email).toLowerCase())));
+    const ids = [...new Set(accounts.map(item => String(item.id)).filter(Boolean))];
+    if (!ids.length) {
+      clearLoginRetry();
+      return null;
+    }
+    return { ...retry, accounts, ids };
+  }
+
+  function setLoginRetry(results, lines, workspaceMode) {
+    const failed = (Array.isArray(results) ? results : [])
+      .filter(item => !item?.ok && item?.id)
+      .map(item => ({ id: String(item.id), email: String(item.email || '').trim() }))
+      .filter((item, index, rows) => rows.findIndex(other => other.id === item.id) === index);
+    state.loginRetry = failed.length
+      ? { ids: failed.map(item => item.id), accounts: failed, workspaceMode, inputEmails: loginInputIdentity(lines) }
+      : null;
+    updateLoginExportActions();
+  }
+
+  function setLoginRetryFromProgress(lines, workspaceMode) {
+    const failed = [...state.loginProgress.values()]
+      .filter(record => record.id && record.status === 'error')
+      .map(record => ({ id: String(record.id), email: String(record.email || '').trim() }))
+      .filter((item, index, rows) => rows.findIndex(other => other.id === item.id) === index);
+    state.loginRetry = failed.length
+      ? { ids: failed.map(item => item.id), accounts: failed, workspaceMode, inputEmails: loginInputIdentity(lines) }
+      : null;
+    updateLoginExportActions();
+  }
+
+  function pipelineRtIds(results = []) {
+    return [...new Set((Array.isArray(results) ? results : [])
+      .filter(item => item?.ok || item?.personalOk || Number(item?.businessSuccess) > 0)
+      .map(item => String(item.id || '').trim())
+      .filter(Boolean))];
   }
 
   function updateLoginStageRail(records) {
@@ -3037,22 +3108,47 @@ import { splitPasswordTotpLine } from './login-account-format.js';
     elements.exportLoginSessions.disabled = true;
     elements.exportLoginPersonal.disabled = true;
     elements.exportLoginBusiness.disabled = true;
+    let retryInputLines = [];
+    let retryWorkspaceMode = "all";
     try {
-      const lines = parseLoginAccounts(elements.loginAccounts.value);
+      const inputLines = parseLoginAccounts(elements.loginAccounts.value);
       const concurrency = selectedTaskConcurrency();
       const workspaceMode = getLoginWorkspaceMode();
+      retryInputLines = inputLines;
+      retryWorkspaceMode = workspaceMode;
+      const retry = pendingLoginRetry(inputLines, workspaceMode);
+      const lines = retry
+        ? retry.accounts.map(item => inputLines.find(line => loginAccountEmail(line).toLowerCase() === String(item.email || '').toLowerCase()) || item.email)
+        : inputLines;
+      const previousLoginAccounts = retry ? [...state.loginLastAccounts] : [];
+      const previousLastIds = retry ? [...state.loginLastIds] : [];
+      const previousSessionIds = retry ? [...state.loginSessionIds] : [];
+      const previousPersonalIds = retry ? [...state.loginPersonalIds] : [];
+      const previousBusinessIds = retry ? [...state.loginBusinessIds] : [];
 
-      initializeLoginProgress(lines);
-      setStatus(elements.loginStatus, `正在导入 ${lines.length} 个账号，并发 ${concurrency}...`);
-      const imported = await loginIcloudRequest("/api/v2/accounts/import", {
-        text: lines.join("\n"),
-        prepareRegistrationAssets: false,
-      });
-      if (!isCurrent()) return;
-      const importedRows = Array.isArray(imported.rows) ? imported.rows : [];
-      const ids = importedRows.map((row) => row.id || row.account?.id).filter(Boolean);
+      initializeLoginProgress(lines, { preserveExports: Boolean(retry) });
+      let imported = { rows: [], failed: 0 };
+      let importedRows = [];
+      let ids = retry ? retry.ids.map(String) : [];
+      if (retry) {
+        setStatus(elements.loginStatus, `正在重试 ${ids.length} 个失败账号，并发 ${concurrency}...`);
+        for (const item of retry.accounts) {
+          const record = loginProgressRecord(item);
+          if (record) record.id = String(item.id);
+          appendLoginProgress(record, "失败账号已加入重试队列", { stage: 0, status: "waiting" });
+        }
+      } else {
+        setStatus(elements.loginStatus, `正在导入 ${lines.length} 个账号，并发 ${concurrency}...`);
+        imported = await loginIcloudRequest("/api/v2/accounts/import", {
+          text: lines.join("\n"),
+          prepareRegistrationAssets: false,
+        });
+        if (!isCurrent()) return;
+        importedRows = Array.isArray(imported.rows) ? imported.rows : [];
+        ids = importedRows.map((row) => row.id || row.account?.id).filter(Boolean);
+      }
       state.loginLastIds = ids.map(String);
-      importedRows.forEach((row, index) => {
+      if (!retry) importedRows.forEach((row, index) => {
         const record = loginProgressRecord({ id: row.id || row.account?.id, email: row.email || row.account?.email || loginAccountEmail(lines[index]) });
         if (!record) return;
         record.id = String(row.id || row.account?.id || "");
@@ -3092,22 +3188,26 @@ import { splitPasswordTotpLine } from './login-account-format.js';
       });
       if (!isCurrent()) return;
       state.loginLastResponse = pipeline;
-      state.loginLastAccounts = pipeline.accounts || [];
+      const accountById = new Map([...previousLoginAccounts, ...(pipeline.accounts || [])].map(account => [String(account.id), account]));
+      state.loginLastAccounts = [...accountById.values()];
       const results = pipeline.results || [];
       const successful = results.filter((item) => item.ok);
       for (const item of successful) { delete state.monitorRetries[item.id]; delete state.monitorStopped[item.id]; }
-      state.loginSessionIds = results.filter((item) => item.sessionOk).map((item) => String(item.id));
-      state.loginPersonalIds = results.filter((item) => item.personalOk).map((item) => String(item.id));
-      state.loginBusinessIds = results.filter((item) => Number(item.businessSuccess) > 0).map((item) => String(item.id));
-      state.loginLastIds = successful.map((item) => String(item.id));
+      state.loginSessionIds = [...new Set([...previousSessionIds, ...results.filter((item) => item.sessionOk).map((item) => String(item.id))])];
+      state.loginPersonalIds = [...new Set([...previousPersonalIds, ...results.filter((item) => item.personalOk).map((item) => String(item.id))])];
+      state.loginBusinessIds = [...new Set([...previousBusinessIds, ...results.filter((item) => Number(item.businessSuccess) > 0).map((item) => String(item.id))])];
+      state.loginLastIds = [...new Set([...previousLastIds, ...successful.map((item) => String(item.id))])];
       state.loginLastRtKind = workspaceMode;
+      setLoginRetry(results, inputLines, workspaceMode);
       elements.exportLoginSessions.disabled = state.loginSessionIds.length === 0;
       updateLoginExportActions();
       if (selectedPushTarget() !== 'none' && workspaceMode !== "session") {
-        await autoPushLoginResults();
+        const exportIds = pipelineRtIds(results);
+        await autoPushLoginResults({ selectedIds: exportIds });
         if (!isCurrent()) return;
       }
-      setStatus(elements.loginStatus, `全部流程完成：成功 ${pipeline.success || 0}，失败 ${pipeline.failed || 0}，账号级并发 ${pipeline.concurrency || concurrency}。`, pipeline.failed ? "error" : "ok");
+      const retryCount = Number(state.loginRetry?.ids?.length || 0);
+      setStatus(elements.loginStatus, `全部流程完成：成功 ${pipeline.success || 0}，失败 ${pipeline.failed || 0}，账号级并发 ${pipeline.concurrency || concurrency}。${retryCount ? `可再次点击“重试失败账号 (${retryCount})”。` : ''}`, pipeline.failed ? "error" : "ok");
       hideLoginModal();
       return;
    } catch (error) {
@@ -3116,6 +3216,7 @@ import { splitPasswordTotpLine } from './login-account-format.js';
       Array.from(state.loginProgress.values()).filter((record) => record.status === "waiting" || record.status === "running").forEach((record) => {
         appendLoginProgress(record, `服务连接中断：${message}`, { status: "error", level: "error" });
       });
+      setLoginRetryFromProgress(retryInputLines, retryWorkspaceMode);
       if (/手机号|手机|验证码|otp|phone|mfa|2fa/i.test(message)) showLoginModal(message);
       setStatus(elements.loginStatus, message, "error");
     } finally {
@@ -3383,7 +3484,12 @@ import { splitPasswordTotpLine } from './login-account-format.js';
     if (files?.length) readFiles(files);
   });
   elements.loginAccounts?.addEventListener("input", () => {
+    clearLoginRetry();
     if (!state.loginProgress.size) elements.loginAccountCount.textContent = `${countLoginAccountLines()} 个账号`;
+  });
+  elements.loginWorkspaceMode?.addEventListener("change", () => {
+    if (state.loginRetry && state.loginRetry.workspaceMode !== getLoginWorkspaceMode()) clearLoginRetry();
+    updateLoginExportActions();
   });
   elements.loginProxyMode?.addEventListener("change", () => selectedLoginProxyNetwork());
   elements.loginProxyLocalPort?.addEventListener("input", () => selectedLoginProxyNetwork());
