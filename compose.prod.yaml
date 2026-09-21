@@ -1,0 +1,59 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gpt-session-converter:local
+    container_name: gpt-session-converter
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      CONTAINER: "true"
+      HOST: 0.0.0.0
+      PORT: "4173"
+      AUTH_MODE: ${AUTH_MODE:-rt}
+      OPENAI_PROXY_URL: ${OPENAI_PROXY_URL-}
+      PROXY_CHAIN_URL: ${PROXY_CHAIN_URL:-}
+      APP_PROXY_POOL: ${APP_PROXY_POOL:-}
+      OPENAI_BUILT_IN_PROXY_POOL: ${OPENAI_BUILT_IN_PROXY_POOL:-}
+      YESCAPTCHA_API_KEY: ${YESCAPTCHA_API_KEY:-}
+      YESCAPTCHA_API_BASE_URL: ${YESCAPTCHA_API_BASE_URL:-https://api.yescaptcha.com}
+      SMSBOWER_API_KEY: ${SMSBOWER_API_KEY:-}
+      OPENAI_TURNSTILE_SITEKEY: ${OPENAI_TURNSTILE_SITEKEY:-}
+      OPENAI_TURNSTILE_WEBSITE_URL: ${OPENAI_TURNSTILE_WEBSITE_URL:-https://auth.openai.com}
+      TURNSTILE_BROWSER_FALLBACK: ${TURNSTILE_BROWSER_FALLBACK:-true}
+      BROWSER_REUSE_ENABLED: ${BROWSER_REUSE_ENABLED:-false}
+      TASK_CONCURRENCY: ${TASK_CONCURRENCY:-10}
+      SESSION_RELOGIN_MAX_ATTEMPTS: ${SESSION_RELOGIN_MAX_ATTEMPTS:-2}
+      OPENAI_AUTH_RATE_LIMIT_COOLDOWN_MS: ${OPENAI_AUTH_RATE_LIMIT_COOLDOWN_MS:-120000}
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-}
+      SUB2API_ADMIN_API_KEY: ${SUB2API_ADMIN_API_KEY:-}
+    logging:
+      driver: "none"
+    ports:
+      - "127.0.0.1:14173:4173"
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: ${APP_PIDS_LIMIT:-2048}
+    mem_limit: ${APP_MEMORY_LIMIT:-6g}
+    cpus: ${APP_CPU_LIMIT:-4.0}
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    external: true
+    name: sub2api_sub2api-network

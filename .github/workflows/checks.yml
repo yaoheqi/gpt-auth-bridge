@@ -1,0 +1,51 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22.19.0', '24.x']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: npm ci --registry=https://registry.npmjs.org
+      - run: python -m pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: npm run check
+      - run: npm run check:sensitive-paths
+      - run: npm run check:runtime
+      - run: npm test
+      - run: npm run test:browser
+      - run: npm audit --omit=dev --registry=https://registry.npmjs.org
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t session-converter-check .
+      - name: Verify read-only container and runtime dependencies
+        shell: bash
+        run: |
+          docker run -d --name app-check --read-only --tmpfs /tmp:rw,size=256m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges --init \
+            -e APP_PROXY_POOL= -e OPENAI_PROXY_URL= -p 127.0.0.1:14173:4173 session-converter-check
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --max-time 5 http://127.0.0.1:14173/api/ready; then exit 0; fi
+            sleep 2
+          done
+          docker logs app-check
+          exit 1
+      - if: always()
+        run: docker rm -f app-check
