@@ -1,0 +1,9 @@
+# Exact direct and transitive versions; update together after browser/network regression checks.
+certifi==2026.7.22
+cffi==2.1.1
+curl_cffi==0.16.3
+greenlet==3.5.6
+playwright==1.62.0
+pycparser==3.0
+pyee==13.0.1
+typing_extensions==4.16.0

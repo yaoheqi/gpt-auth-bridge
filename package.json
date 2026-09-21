@@ -1,0 +1,25 @@
+{
+  "name": "gpt-session-2-cpa-and-sub2api",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "check:sensitive-paths": "node scripts/check-sensitive-paths.mjs",
+    "test": "node --test tests/*.test.js login-service/lib/*.test.mjs login-service/test/*.test.mjs",
+    "test:browser": "python tests/browser-storage-smoke.py && python tests/browser-workspace-consistency.py",
+    "check": "node scripts/check-syntax.mjs",
+    "job:health": "node login-service/scripts/session-health.mjs",
+    "check:runtime": "node scripts/check-runtime.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "type": "module",
+  "description": "Session conversion and protocol login with browser-owned data",
+  "dependencies": {
+    "express": "4.22.3",
+    "fetch-cookie": "^3.2.0",
+    "proxy-chain": "^3.0.1",
+    "tough-cookie": "6.0.2",
+    "undici": "8.10.2"
+  }
+}
