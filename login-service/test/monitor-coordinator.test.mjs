@@ -61,7 +61,7 @@ test('errors unpin work and credential failures are shared only for the same cre
 });
 
 test('only explicit account or credential rejection stops monitoring; transient MFA and authorization-code failures remain retryable', () => {
-  for (const message of ['account_deleted', 'user_not_found', '账号已删除', 'account has been deactivated']) assert.equal(terminalLoginFailure(message), 'account_unavailable', message);
+  for (const message of ['account_deleted', 'user_not_found', '账号已删除', '账号被封禁', 'account has been deactivated', 'account banned', 'account suspended']) assert.equal(terminalLoginFailure(message), 'account_unavailable', message);
   for (const message of ['invalid_username_or_password', 'Incorrect password', 'Incorrect email address or password', 'Wrong email or password', 'password is invalid', '密码不正确']) assert.equal(terminalLoginFailure(message), 'password_invalid', message);
   for (const message of ['MFAVerify请求失败: HTTP 400 invalid_code', 'MFAVerify: Invalid verification code', 'OTP is wrong', 'invalid_otp', '2FA 密钥不是有效的 Base32', '验证码错误']) assert.equal(terminalLoginFailure(message), 'totp_invalid', message);
   for (const message of ['MFA request timed out', 'MFAVerify请求失败: HTTP 403', 'PasswordVerify: HTTP 400 invalid_state', 'MFAVerify: invalid_state', 'password verify ECONNRESET', 'invalid authorization code', 'invalid_code', 'OAuth invalid_grant', 'network error']) assert.equal(terminalLoginFailure(message), '', message);

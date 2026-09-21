@@ -2097,7 +2097,7 @@ import { splitPasswordTotpLine } from './login-account-format.js';
 
   function setLoginRetry(results, lines, workspaceMode) {
     const failed = (Array.isArray(results) ? results : [])
-      .filter(item => !item?.ok && item?.id)
+      .filter(item => isRetryableLoginFailure(item))
       .map(item => ({ id: String(item.id), email: String(item.email || '').trim() }))
       .filter((item, index, rows) => rows.findIndex(other => other.id === item.id) === index);
     state.loginRetry = failed.length
@@ -2108,13 +2108,23 @@ import { splitPasswordTotpLine } from './login-account-format.js';
 
   function setLoginRetryFromProgress(lines, workspaceMode) {
     const failed = [...state.loginProgress.values()]
-      .filter(record => record.id && record.status === 'error')
+      .filter(record => record.id && record.status === 'error' && isRetryableLoginFailure({
+        id: record.id,
+        terminalReason: record.terminalReason,
+        error: record.error || record.logs?.at(-1)?.message || '',
+      }))
       .map(record => ({ id: String(record.id), email: String(record.email || '').trim() }))
       .filter((item, index, rows) => rows.findIndex(other => other.id === item.id) === index);
     state.loginRetry = failed.length
       ? { ids: failed.map(item => item.id), accounts: failed, workspaceMode, inputEmails: loginInputIdentity(lines) }
       : null;
     updateLoginExportActions();
+  }
+
+  function isRetryableLoginFailure(item = {}) {
+    if (!item?.id || item.ok || item.terminalReason) return false;
+    const text = String(item.error || item.detail || item.healthLabel || item.message || '').toLowerCase();
+    return !/invalid[_ -]?(?:username|email|password)|incorrect|wrong password|password(?: is| was)? (?:invalid|incorrect|wrong|rejected)|密码.{0,16}(?:错误|不正确|无效|拒绝)|(?:invalid|incorrect|wrong)[_ -]?(?:otp|totp|mfa|2fa)|(?:otp|totp|mfa|2fa|验证码).{0,24}(?:错误|不正确|无效|拒绝)|account[_ -]?(?:deactivated|deleted|not[_ -]?found|banned|suspended|disabled|locked)|user[_ -]?(?:deleted|not[_ -]?found|banned|suspended|disabled)|account (?:has been |is )?(?:deleted|deactivated|banned|suspended|disabled|locked)|账号.{0,8}(?:停用|封禁|删除|不存在|冻结)|账户.{0,8}(?:删除|停用|不存在|封禁|冻结)/i.test(text);
   }
 
   function pipelineRtIds(results = []) {
@@ -2624,6 +2634,8 @@ import { splitPasswordTotpLine } from './login-account-format.js';
             const onEvent = (name, data) => {
               const record = ensureLoginProgressRecord(data, accounts.findIndex(account => String(account.id) === String(data?.id)));
               if (data.terminalReason) markMonitorStopped(data.id, data.terminalReason);
+              if (record && data.terminalReason) record.terminalReason = data.terminalReason;
+              if (record && data.error) record.error = sanitizeLoginLog(data.error);
               if (name === 'account_start') appendLoginProgress(record, '定时测活发现失效，开始协议重登', { stage: 0, status: 'running' });
               if (name === 'account_done') appendLoginProgress(record, data.ok ? '定时重登完成'
                 : data.terminalReason ? `${monitorStopLabels[data.terminalReason]}，已停止自动重试`
@@ -3194,6 +3206,8 @@ import { splitPasswordTotpLine } from './login-account-format.js';
             status: "running", level: data.level, time: data.time,
           });
         } else if (name === "account_done") {
+          if (record && data.terminalReason) record.terminalReason = data.terminalReason;
+          if (record && data.error) record.error = sanitizeLoginLog(data.error);
           if (data.ok) {
             const doneText = workspaceMode === "session"
               ? "协议登录完成，Session 已就绪"

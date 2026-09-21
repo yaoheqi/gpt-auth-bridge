@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 
 export function terminalLoginFailure(input = '') {
   const text = (typeof input === 'string' ? input : `${input?.code || ''} ${input?.message || input?.error || ''}`).toLowerCase();
-  if (/account[_ -]?(?:deactivated|deleted|not_found)|user[_ -]?(?:deleted|not_found)|account (?:has been |is )?(?:deleted|deactivated)|账号.{0,8}(?:停用|封禁|删除|不存在)|账户.{0,8}(?:删除|停用|不存在)/.test(text)) return 'account_unavailable';
+  if (/account[_ -]?(?:deactivated|deleted|not_found|banned|suspended|disabled|locked)|user[_ -]?(?:deleted|not_found|banned|suspended|disabled)|account (?:has been |is )?(?:deleted|deactivated|banned|suspended|disabled|locked)|账号.{0,8}(?:停用|封禁|删除|不存在|冻结)|账户.{0,8}(?:删除|停用|不存在|封禁|冻结)/.test(text)) return 'account_unavailable';
   if (/invalid_username_or_password|(?:incorrect|wrong|invalid)[_ ](?:(?:email(?: address)?|username)[_ ]or[_ ])?password\b|password(?: (?:is|was|has been))?[_ ](?:incorrect|wrong|invalid|rejected)\b|密码.{0,12}(?:错误|不正确|无效|拒绝)/.test(text)) return 'password_invalid';
   if (/(?:invalid|incorrect|wrong)[_ ](?:otp|totp|mfa|2fa)\b|(?:totp|otp|2fa|authenticator)(?:[_ ](?:code|secret))?(?: (?:is|was))?[_ ](?:invalid|incorrect|wrong|rejected)\b|(?:totp|2fa|mfa|验证码).{0,20}(?:错误|不正确|无效|不是有效)|2fa 密钥不能为空/.test(text)
     || (/(?:totp|otp|2fa|mfa|authenticator)/.test(text) && /(?:invalid|incorrect|wrong)[_ ](?:verification |authentication )?code\b|code (?:is )?(?:invalid|incorrect|wrong)\b/.test(text))) return 'totp_invalid';
