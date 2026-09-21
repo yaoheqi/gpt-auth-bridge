@@ -1936,6 +1936,17 @@ import { splitPasswordTotpLine } from './login-account-format.js';
     return null;
   }
 
+  function ensureLoginProgressRecord(data = {}, order = 0) {
+    const existing = loginProgressRecord(data);
+    if (existing) return existing;
+    const id = String(data.id || data.accountId || '').trim();
+    const email = String(data.email || '').trim();
+    if (!id && !email) return null;
+    const record = { id, email: email || id, stage: 0, status: 'waiting', logs: [], order };
+    state.loginProgress.set(record.email.toLowerCase(), record);
+    return record;
+  }
+
   function sanitizeLoginLog(message) {
     let text = String(message || "");
     state.loginSensitiveValues.forEach((value) => {
@@ -2611,7 +2622,7 @@ import { splitPasswordTotpLine } from './login-account-format.js';
             await persistBrowserWorkspace(true, true);
             requireCurrentWorkspace(isCurrent);
             const onEvent = (name, data) => {
-              const record = loginProgressRecord(data);
+              const record = ensureLoginProgressRecord(data, accounts.findIndex(account => String(account.id) === String(data?.id)));
               if (data.terminalReason) markMonitorStopped(data.id, data.terminalReason);
               if (name === 'account_start') appendLoginProgress(record, '定时测活发现失效，开始协议重登', { stage: 0, status: 'running' });
               if (name === 'account_done') appendLoginProgress(record, data.ok ? '定时重登完成'
@@ -2621,19 +2632,26 @@ import { splitPasswordTotpLine } from './login-account-format.js';
             const reloginIds = invalid.map(account => String(account.id));
             const pipeline = await loginIcloudStream('/api/v2/accounts/protocol-login-pipeline', { ids: reloginIds, workspaceMode: 'all', ...network }, onEvent, controller.signal);
             requireCurrentWorkspace(isCurrent);
-            for (const row of pipeline.results) {
+            const pipelineResults = Array.isArray(pipeline.results) ? pipeline.results : [];
+            state.loginLastResponse = pipeline;
+            const accountById = new Map([...state.loginLastAccounts, ...(pipeline.accounts || [])].map(account => [String(account.id), account]));
+            state.loginLastAccounts = [...accountById.values()];
+            state.loginLastRtKind = 'all';
+            for (const row of pipelineResults) {
               if (row.terminalReason) markMonitorStopped(row.id, row.terminalReason);
               if (row.monitorBusy) delete state.monitorRetries[row.id];
             }
-            const successful = pipeline.results.filter(row => row.ok).map(row => String(row.id));
+            const successful = pipelineResults.filter(row => row.ok).map(row => String(row.id));
+            const rtReady = pipelineRtIds(pipelineResults);
             refreshed = successful.length;
             for (const id of successful) delete state.monitorRetries[id];
-            state.loginPersonalIds = [...new Set([...state.loginPersonalIds, ...successful])];
-            state.loginBusinessIds = [...new Set([...state.loginBusinessIds, ...pipeline.results.filter(row => row.ok && row.businessSuccess > 0).map(row => String(row.id))])];
+            state.loginLastIds = [...new Set([...state.loginLastIds, ...successful])];
+            state.loginPersonalIds = [...new Set([...state.loginPersonalIds, ...pipelineResults.filter(row => row.personalOk).map(row => String(row.id))])];
+            state.loginBusinessIds = [...new Set([...state.loginBusinessIds, ...pipelineResults.filter(row => Number(row.businessSuccess) > 0).map(row => String(row.id))])];
             state.loginSessionIds = state.browserAccounts.filter(account => account.session_access_token).map(account => String(account.id));
             await persistBrowserWorkspace(true, true);
             requireCurrentWorkspace(isCurrent);
-            if (successful.length) pushed = Boolean((await autoPushLoginResults({ ids: successful, upsert: true, signal: controller.signal }))?.ok);
+            if (rtReady.length) pushed = Boolean((await autoPushLoginResults({ ids: rtReady, upsert: true, signal: controller.signal }))?.ok);
           }
           requireCurrentWorkspace(isCurrent);
           const unknown = probe.results.filter(row => row.health === 'probe_failed').length;
