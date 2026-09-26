@@ -1,5 +1,7 @@
 import { withSessionTransport, checkSessionHealth, logoutAllSessions } from './session-network.js';
 import { configuredTaskConcurrency } from '../login-service/lib/batch-concurrency.js';
+import { operationMetadata } from '../docs/operation-contract.js';
+import { operationErrorPayload } from '../login-service/src/http/operation-error.js';
 
 import { runAccountTask } from '../login-service/lib/task-concurrency.js';
 
@@ -15,6 +17,8 @@ const STATIC_FILES = Object.freeze({
   "/index.html": "index.html",
   "/favicon.svg": "favicon.svg",
   "/browser-store.js": "browser-store.js",
+  "/workspace-schema.js": "workspace-schema.js",
+  "/operation-contract.js": "operation-contract.js",
   "/app.js": "app.js",
   "/login-account-format.js": "login-account-format.js",
   "/app.css": "app.css",
@@ -31,7 +35,8 @@ function applySecurityHeaders(response) {
 
 function sendJson(response, status, payload, headers = {}) {
   if (response.writableEnded) return;
-  const body = JSON.stringify(payload);
+  const body = JSON.stringify({ ...payload, ...(status >= 400 ? operationErrorPayload(Object.assign(new Error(payload.error || '请求失败'), { code: payload.code || 'INVALID_REQUEST', status })) : {}),
+    ...operationMetadata(response.locals?.operationId, response.locals?.requestId) });
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body), "Cache-Control": "no-store", ...headers });
   response.end(body);
 }

@@ -214,8 +214,8 @@
             <div class="status-line" id="login-status" role="status" aria-live="polite">登录服务未开始。</div>
             <div id="login-push-feedback-slot">
               <div id="push-feedback" class="push-feedback" hidden>
-                <div class="push-feedback-head"><div class="status-line" id="push-status" role="status" aria-live="polite"></div><button class="button button-secondary hidden" id="retry-push" type="button" disabled>重试失败项</button></div>
-                <details id="push-result-details" hidden><summary>推送明细</summary><ul id="push-results"></ul></details>
+                <div class="push-feedback-head"><div class="status-line" id="push-status" role="status" aria-live="polite"></div><button class="button button-secondary hidden" id="reconcile-push" type="button" disabled>核对远端结果</button><button class="button button-secondary hidden" id="retry-push" type="button" disabled>重试失败项</button></div>
+                <details id="push-result-details" hidden><summary>推送明细</summary><label>推送记录 <select id="push-operation-history" aria-label="推送记录"></select></label><ul id="push-results"></ul></details>
               </div>
             </div>
 
@@ -391,6 +391,8 @@
         <div class="push-connection-fields">
           <label>服务地址<input id="login-sub2-base-url" type="url" autocomplete="off" placeholder="https://sub2.example.com" /></label>
           <label>Admin Key<span class="login-sub2-secret"><input id="login-sub2-admin-key" type="password" autocomplete="off" placeholder="填写管理密钥" /><button class="button button-secondary" id="toggle-login-sub2-key" type="button">显示</button></span></label>
+          <label class="push-checkbox-label"><input id="login-sub2-use-proxy" type="checkbox" /> 为推送账号指定代理</label>
+          <label id="login-sub2-proxy-wrap" class="hidden">代理项<select id="login-sub2-proxy"><option value="">填写地址和密钥后读取代理</option></select></label>
         </div>
         <section class="push-group-section" aria-labelledby="sub2-groups-title">
           <div class="push-section-heading"><div><strong id="sub2-groups-title">推送分组</strong><span id="login-sub2-group-count">已选 0 个</span></div><button class="button button-secondary" id="load-login-sub2-groups" type="button">读取分组</button></div>
@@ -425,6 +427,7 @@
 
     <div class="push-toast" id="push-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
+    <script src="/workspace-schema.js"></script>
     <script src="/browser-store.js"></script>
     <script type="module" src="/app.js"></script>
 

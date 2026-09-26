@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import vm from 'node:vm';
 import { splitPasswordTotpLine } from '../docs/login-account-format.js';
+import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent } from '../docs/operation-contract.js';
 
 function createFakeElement(selector, options = {}) {
   const classes = new Set();
@@ -91,6 +92,10 @@ function loadPageScript(options = {}) {
 
   const context = {
     splitPasswordTotpLine,
+    OPERATION_SCHEMA_VERSION,
+    validatePushResults,
+    validateOperationEvent,
+    AbortController,
     TextDecoder,
     TextEncoder,
     URL: {
@@ -115,7 +120,7 @@ function loadPageScript(options = {}) {
     setTimeout,
   };
 
-  vm.runInNewContext(script.replace(/^import \{ splitPasswordTotpLine \} from '.\/login-account-format.js';\s*/, ''), context, { filename: "docs/app.js" });
+  vm.runInNewContext(script.replace(/^import .+;\r?\n/gm, ''), context, { filename: "docs/app.js" });
 
   return { elements, formatButtons };
 }

@@ -1,7 +1,8 @@
 /* Atomic revision checks protect credentials across tabs, including after clear. */
 (() => {
   let database;
-  let queue = Promise.resolve();
+  const queue = [];
+  let draining = false;
   let revision;
   let blocked = false;
   let clearing;
@@ -116,9 +117,32 @@
       tx.onerror = tx.onabort = () => reject(failure || tx.error || new Error('浏览器存储不可用'));
     });
   }
-  function enqueue(run) {
-    const pending = queue.then(run);
-    queue = pending.catch(() => {});
+  function enqueue(snapshot, kind = 'change', barrier = false) {
+    const pending = new Promise((resolve, reject) => {
+      const last = queue.at(-1);
+      // Only supersede ordinary snapshots that have not started. Barriers retain
+      // their exact value and ordering, including required saves and clear.
+      if (!barrier && last?.kind === 'change' && !last.barrier) {
+        last.snapshot = snapshot;
+        last.waiters.push({ resolve, reject });
+      } else queue.push({ snapshot, kind, barrier, waiters: [{ resolve, reject }] });
+    });
+    if (!draining) {
+      draining = true;
+      queueMicrotask(async () => {
+        try {
+          while (queue.length) {
+            const entry = queue.shift();
+            try {
+              await write(entry.snapshot, entry.kind);
+              for (const waiter of entry.waiters) waiter.resolve();
+            } catch (error) {
+              for (const waiter of entry.waiters) waiter.reject(error);
+            }
+          }
+        } finally { draining = false; }
+      });
+    }
     return pending;
   }
   function reset(kind, value) {
@@ -128,7 +152,7 @@
     blocked = true;
     invalidationKind = kind;
     controller.abort();
-    clearing = enqueue(() => write(snapshot, kind)).then(() => {
+    clearing = enqueue(snapshot, kind, true).then(() => {
       if (notifiedRevision <= revision) {
         controller = new AbortController();
         blocked = false;
@@ -144,10 +168,10 @@
       if (blocked) queueMicrotask(() => listener(invalidationKind));
       return () => listeners.delete(listener);
     },
-    save(value) {
+    save(value, { barrier = false } = {}) {
       if (blocked) return Promise.reject(conflict());
       const snapshot = structuredClone(value);
-      return enqueue(() => write(snapshot));
+      return enqueue(snapshot, 'change', barrier);
     },
     clear: () => reset('clear'),
     clearLoginData: value => reset('clear-login', value),

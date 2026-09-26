@@ -173,7 +173,7 @@ def main():
                         window.pendingSignal = options.signal;
                         return Promise.resolve(new Response(new ReadableStream({start(controller) {
                             window.pendingStream = controller;
-                        }}), {headers: {'Content-Type': 'text/event-stream'}}));
+                        }, cancel() { window.cancelledStreams = (window.cancelledStreams || 0) + 1; }}), {headers: {'Content-Type': 'text/event-stream'}}));
                     };
                 }""")
                 page.locator("#login-accounts").fill("late@example.com----FixturePassword!----JBSWY3DPEHPK3PXP")
@@ -187,6 +187,7 @@ def main():
                 page.locator("#clear-browser-data").click()
                 expect(page.locator("#browser-storage-status")).to_have_text("所有数据已清空")
                 assert page.evaluate("pendingSignal.aborted && !browserWorkspace.signal.aborted")
+                page.wait_for_function("() => window.cancelledStreams === 1")
                 page.evaluate("""() => {
                     window.lateStream = pendingStream;
                     window.pendingStream = null;
@@ -195,8 +196,10 @@ def main():
                 page.locator("#start-protocol-login").click()
                 page.wait_for_function("() => !!window.pendingStream")
                 page.evaluate("""() => {
-                    lateStream.enqueue(new TextEncoder().encode('event: browser_state\\ndata: {"accounts":[{"id":"late","email":"late@example.com","password":"stale-password"}]}\\n\\nevent: summary\\ndata: {"ok":true,"success":1}\\n\\n'));
-                    lateStream.close();
+                    try {
+                        lateStream.enqueue(new TextEncoder().encode('event: browser_state\\ndata: {"accounts":[{"id":"late","email":"late@example.com","password":"stale-password"}]}\\n\\nevent: summary\\ndata: {"ok":true,"success":1}\\n\\n'));
+                        lateStream.close();
+                    } catch (error) { if (!(error instanceof TypeError)) throw error; }
                 }""")
                 page.wait_for_timeout(400)  # Includes the pending persistence debounce.
                 expect(page.locator("#start-protocol-login")).to_be_disabled()
@@ -206,7 +209,7 @@ def main():
                 page.once("dialog", lambda dialog: dialog.accept())
                 page.locator("#clear-browser-data").click()
                 expect(page.locator("#browser-storage-status")).to_have_text("所有数据已清空")
-                page.evaluate("() => { pendingStream.close(); window.fetch = originalFetch; }")
+                page.evaluate("() => { try { pendingStream.close(); } catch (error) { if (!(error instanceof TypeError)) throw error; } window.fetch = originalFetch; }")
                 page.wait_for_timeout(400)
                 assert page.evaluate("async () => !(await browserWorkspace.read())")
 

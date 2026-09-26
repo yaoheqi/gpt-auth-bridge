@@ -4,18 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import test from 'node:test';
-import { parseProxyPool } from '../login-service/lib/proxy-config.js';
+import { createAuthNetworkPolicy } from '../login-service/src/services/auth/network-policy.js';
 
 test('protocol requests use the built-in pool only when explicitly selected', async () => {
-  const server = await fs.readFile(path.join(__dirname, '..', 'login-service', 'server.js'), 'utf8');
-  const start = server.indexOf('function protocolRequestNetwork(');
-  const end = server.indexOf('function accountRequestNetwork(', start);
-  assert.ok(start >= 0 && end > start);
   let configuredPool = 'builtin.example:3000:user:password';
   let reads = 0;
-  const network = new Function('resolveBuiltInProxyPool', 'parseProxyPool', `return (${server.slice(start, end).trim()})`)(
-    () => { reads++; return configuredPool; }, parseProxyPool,
-  );
+  const { protocolRequestNetwork: network } = createAuthNetworkPolicy({
+    getBuiltInProxyPool: () => { reads++; return configuredPool; },
+  });
   assert.equal(network({ browserState: {} }).proxyPool, '');
   assert.equal(network({ proxyMode: 'direct', proxyPool: 'custom.example:3000' }).proxyPool, '');
   assert.equal(network({ proxyMode: 'local', localProxyPort: 8899 }).proxyPool, 'http://127.0.0.1:8899');
@@ -105,12 +101,16 @@ test('protocol workflow applies one stable request proxy per account and explici
   const proxy = await fs.readFile(path.join(__dirname, '..', 'login-service', 'lib', 'proxy-config.js'), 'utf8');
   const curl = await fs.readFile(path.join(__dirname, '..', 'login-service', 'scripts', 'curl_cffi_session.py'), 'utf8');
 
-  assert.match(server, /function protocolRequestNetwork/);
-  assert.match(server, /directWhenProxyPoolEmpty: true/);
-  assert.match(server, /function accountRequestNetwork/);
+  const { accountRequestNetwork } = createAuthNetworkPolicy({
+    random: () => 0,
+    proxyHealthRegistry: { choose: candidates => candidates[0] },
+  });
+  const selected = accountRequestNetwork({}, { proxyPool: 'http://proxy.example:3000', directWhenProxyPoolEmpty: true });
+  assert.equal(selected.proxyPool, 'http://proxy.example:3000/');
+  assert.equal(selected.directWhenProxyPoolEmpty, true);
+  assert.deepEqual(accountRequestNetwork({}, { proxyPool: '' }), { proxyPool: '' });
   assert.match(server, /const requestScopedNetwork = network\.proxyPool !== undefined;/);
   assert.match(server, /if \(egress\) noteAccountEgressMismatch\(account, egress\);/);
-  assert.match(server, /const index = Math\.floor\(Math\.random\(\) \* candidates\.length\)/);
   assert.match(server, /runSessionHealthCheckForAccounts\(accounts,[\s\S]*?\.\.\.requestNetwork/);
   assert.match(server, /runCodexAuthForAccounts\(accounts,[\s\S]*?\.\.\.requestNetwork/);
   assert.match(server, /runBusinessCodexAuthForAccount\(account,[\s\S]*?\.\.\.requestNetwork/);
@@ -132,11 +132,8 @@ test('protocol login UI exposes TOTP reset and renders the latest credentials', 
   assert.match(source, /最新账号凭据/);
   assert.match(source, /credentials\.flatMap/);
   assert.match(server, /app\.post\('\/api\/v2\/accounts\/reset-totp'/);
-  assert.match(server, /disableTotpMfa/);
-  assert.match(server, /CHATGPT_MFA_DISABLE_URL/);
-  assert.match(server, /withCachedWebSession\(flowAccount/);
-  assert.match(server, /loginChatGptWebWithPasswordTotp\(\)/);
-  assert.match(server, /persistChatGptWebSession\(latest\.id/);
+  // MFA Session reuse and persistence are exercised against the imported
+  // production services in reset-totp-session and workspace-auth-flow tests.
 });
 
 test('protocol login UI exposes logout-all above self-leave and guards the destructive action', async () => {
@@ -163,13 +160,4 @@ test('sub2api logout all sessions is guarded by a fresh probe and supports concu
   assert.match(server, /app|pathname === "\/api\/logout-all-sessions"/);
   assert.match(server, /withSessionTransport/);
   assert.match(server, /const concurrency = configuredTaskConcurrency\(\)/);
-});
-
-test('Business OAuth can re-enter password and TOTP when stored cookies need verification', async () => {
-  const server = await fs.readFile(path.join(__dirname, '..', 'login-service', 'server.js'), 'utf8');
-  assert.match(server, /credentialFallback = this\.isPasswordTotpAccount\(\)/);
-  assert.match(server, /pathName === '\/log-in\/password'/);
-  assert.match(server, /继续提交密码和 TOTP 后完成 Business OAuth/);
-  assert.match(server, /const advanced = await this\.advanceAuthStep\(continueURL, \{ phase: 'codex' \}\)/);
-  assert.match(server, /forbidPhoneChallenge: true/);
 });

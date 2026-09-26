@@ -171,7 +171,8 @@ def exercise_push(page, login_plans):
             expect(page.locator('#push-status')).to_contain_text('没有可推送的非 free 账号')
             expect(page.locator('#start-protocol-login')).to_be_enabled()
             expect(page.locator('#retry-push')).to_be_hidden()
-            expect(page.locator('#push-result-details')).to_be_hidden()
+            # An empty automatic batch still keeps earlier operation history.
+            expect(page.locator('#push-result-details')).to_be_visible()
             assert len(calls) == before
             for kind, count in [('personal', 1), ('business', 2)]:
                 with page.expect_download() as download:
@@ -296,10 +297,18 @@ def exercise_push(page, login_plans):
 def exercise_saved_conversion(source):
     source.wait_for_timeout(350)  # Wait for the completed push snapshot to persist.
     snapshot = source.evaluate('() => browserWorkspace.read()')
-    assert snapshot['state']['converted'][0]['cpa']['refresh_token'] == 'fixture-session-rt'
-    for item in snapshot['state']['converted']:
-        item['sub2apiAccount']['credentials'].pop('refresh_token', None)
-        item['sub2apiAccount']['credentials'].pop('id_token', None)
+    assert snapshot['schemaVersion'] == 1 and 'converted' not in snapshot['state']
+    original = json.loads(snapshot['state']['conversionInput']['text'])
+    assert original['refresh_token'] == 'fixture-session-rt'
+    # Upgrade an output-only legacy snapshot without depending on persisted
+    # generated format copies in the current business schema.
+    snapshot.pop('schemaVersion')
+    snapshot['state'].pop('conversionInput')
+    snapshot['state']['converted'] = [{'cpa': {
+        'type': 'codex', 'email': original['email'], 'access_token': original['accessToken'],
+        'refresh_token': original['refresh_token'], 'id_token': original['id_token'],
+        'account_id': original['account']['id'],
+    }}]
     context = source.context.browser.new_context()
     try:
         page = context.new_page()
@@ -326,7 +335,7 @@ def exercise_saved_conversion(source):
 
 def exercise_clear_login(source):
     snapshot = source.evaluate('() => browserWorkspace.read()')
-    assert snapshot['state']['browserAccounts'] and snapshot['state']['sessions']
+    assert snapshot['state']['browserAccounts'] and snapshot['state']['conversionInput']['text']
     context = source.context.browser.new_context()
     try:
         page = context.new_page()
@@ -372,9 +381,9 @@ def exercise_clear_login(source):
         raw = json.dumps(saved)
         for secret in ['FixturePassword!', 'JBSWY3DPEHPK3PXP', 'fixture@example.com', 'fixture-personal-rt', 'fixture-business-rt', 'fixture-session-rt', 'fixture-session-access']:
             assert secret not in raw, secret
-        assert saved['state']['browserAccounts'] == [] and saved['state']['sessions'] == []
-        assert saved['state']['loginProgress'] == [] and saved['state']['pushResults'] == []
-        assert saved['state']['pushRetry'] is None
+        assert saved['state']['browserAccounts'] == [] and saved['state']['conversionInput']['text'] == ''
+        assert saved['state']['loginProgress'] == [] and saved['state']['pushOperations'] == []
+        assert 'pushRetry' not in saved['state'] and 'pushResults' not in saved['state']
         assert saved['state']['browserSettings']['sub2apiSettings']['groupIds'] == [7]
         assert saved['state']['cpaSettings']['managementKey'] == 'fixture-cpa-key'
         page.reload()

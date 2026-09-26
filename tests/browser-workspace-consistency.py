@@ -79,6 +79,35 @@ def main():
         results = [page.evaluate("() => window.result") for page in pages]
         assert sorted(results) == ["WORKSPACE_CONFLICT", "saved"], results
         context.close()
+        # A slow write coalesces ordinary pending snapshots, but required saves
+        # remain exact durable boundaries before later edits.
+        context = browser.new_context()
+        context.route(ORIGIN + "/**", lambda route: route.fulfill(
+            status=200, content_type="text/html", body="<script>" + SOURCE + "</script>"))
+        page = context.new_page()
+        page.goto(ORIGIN)
+        page.evaluate("""async () => {
+            await browserWorkspace.read();
+            window.writtenValues = [];
+            const encrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+            crypto.subtle.encrypt = async (algorithm, key, data) => {
+                writtenValues.push(JSON.parse(new TextDecoder().decode(data)).value);
+                if (writtenValues.length === 1) await new Promise(resolve => { window.releaseWrite = resolve; });
+                return encrypt(algorithm, key, data);
+            };
+            window.saves = [browserWorkspace.save({value:'writing'})];
+        }""")
+        page.wait_for_function("() => !!window.releaseWrite")
+        page.evaluate("""async () => {
+            for (let index = 0; index < 30; index++) saves.push(browserWorkspace.save({value:'before-' + index}));
+            saves.push(browserWorkspace.save({value:'credential-boundary'}, {barrier:true}));
+            for (let index = 0; index < 30; index++) saves.push(browserWorkspace.save({value:'after-' + index}));
+            releaseWrite();
+            await Promise.all(saves);
+        }""")
+        assert page.evaluate("writtenValues") == ['writing', 'before-29', 'credential-boundary', 'after-29']
+        assert page.evaluate("async () => (await browserWorkspace.read()).value") == 'after-29'
+        context.close()
         # Upgrade the previous plaintext storage format, including duplicate form fields.
         context = browser.new_context()
         context.route(ORIGIN + "/**", lambda route: route.fulfill(

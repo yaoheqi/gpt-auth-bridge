@@ -5,7 +5,8 @@
     "start": "node server.js",
     "check:sensitive-paths": "node scripts/check-sensitive-paths.mjs",
     "test": "node --test tests/*.test.js login-service/lib/*.test.mjs login-service/test/*.test.mjs",
-    "test:browser": "python tests/browser-storage-smoke.py && python tests/browser-workspace-consistency.py",
+    "test:browser": "python tests/browser-storage-smoke.py && python tests/browser-workspace-consistency.py && python tests/browser-durability.py",
+    "bench:runtime": "node scripts/benchmark-request-runtime.mjs",
     "check": "node scripts/check-syntax.mjs",
     "job:health": "node login-service/scripts/session-health.mjs",
     "check:runtime": "node scripts/check-runtime.mjs"

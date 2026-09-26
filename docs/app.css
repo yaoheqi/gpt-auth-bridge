@@ -1187,6 +1187,8 @@ label:has(#login-push-sub2-only) { display: none !important; }
 .push-config-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 22px; display: grid; gap: 20px; }
 .push-connection-fields { display: grid; gap: 12px; }
 .push-connection-fields > label { display: grid; gap: 6px; color: var(--muted); font-size: .82rem; font-weight: 600; }
+.push-connection-fields > .push-checkbox-label { display: flex; grid-template-columns: none; align-items: center; gap: 8px; cursor: pointer; }
+.push-checkbox-label input { width: auto !important; min-height: 0 !important; accent-color: var(--accent); }
 .push-config input:not([type=checkbox]), .push-config select { width: 100%; min-width: 0; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; color: var(--text); font: inherit; }
 .push-config .button { flex: 0 0 auto; width: auto; min-height: 34px; padding: 7px 12px; font-size: .82rem; white-space: nowrap; }
 .push-config .push-dialog-heading .button { min-width: 58px; }
