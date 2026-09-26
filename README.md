@@ -32,6 +32,10 @@ npm start
 
 服务器只在单次请求期间临时处理浏览器提交的数据。内部沿用 SQLite 仓库接口，但每个请求独立使用 `:memory:` 数据库，请求结束或断开即释放，不产生数据库、设置文件、账号日志或推送队列。只提交上一次的账号 ID 无法读取数据，调用方必须同时提交自己的 `browserState`。服务器重启不影响已保存在浏览器的结果，进行中的操作需要重新发起。
 
+在线请求仅初始化账号和配置所需的内存表，不创建后台任务、outbox 或迁移历史。更新单个账号时只写入该账号；请求结束时同时清理账号、配置缓存、队列完成值和临时密钥。API 路由区分大小写，未知及已退役接口会在创建账号运行时之前拒绝。
+
+浏览器工作区带独立的业务 `schemaVersion`，旧快照自动迁移；无法识别的新版本不会被覆盖。转换只持久保存原始输入和文件来源，刷新后在本地重建导出格式，不重新触发测活。普通保存最多保留一份正在写入和一份最新待写快照；凭据变更、清空和推送前保存使用提交屏障，确认加密保存完成后再继续。
+
 顶部提供两种清空操作：“清空登录数据”删除账号输入、密码/TOTP、Session/RT、日志及转换和推送结果，保留自定义代理、Sub2API、CPA 配置和导出参数，并重新加密保存；“清空所有数据”同时删除所有浏览器配置和加密密钥。浏览器禁止存储或空间不足时页面会提示，请及时下载。主动下载的文件保存在用户设备；用户主动推送至 Sub2API / CPA 后，数据由目标服务管理。
 
 多个标签页共用同一份浏览器数据。保存使用 IndexedDB 事务校验版本；其他标签页更新数据后，旧页面会停止请求并提示刷新，避免覆盖新结果。清空数据会通知其他标签页刷新，并保留一个不含用户信息的版本计数，防止旧页面重新写回凭据。禁用 BroadcastChannel 的浏览器仍由事务版本校验保护。
@@ -44,11 +48,13 @@ npm start
 
 HTTP worker 数量和 Chromium 辅助验证并发也使用 `TASK_CONCURRENCY`。默认启动并预热 **10 个 Python HTTP worker**，固定保留 10 个，退出的空闲 worker 自动补起；不再动态扩缩容。超过容量的操作排队，断开后取消等待；账号交接前清理 Session，同账号的工作区仍顺序授权。浏览器辅助最多同时运行 **10 个**，仅在需要人机验证时启动。限流和网络错误保留原有的重试、退避处理，不再改变并发数。
 
+设执行并发为 N，需要处理数据的 API 请求最多 `max(16, 4×N)` 个（健康检查、指标等轻量查询除外），超出容量在解析请求体前返回 429。账号及执行池的等待队列设有上限 `max(32, 4×N)`，排队最长 90 秒；单账号执行最长 15 分钟（不含排队），资源回收预算为 5 秒。这些边界保留统一执行并发，不引入新的页面并发参数。新测活会取消旧测活；取消在途 HTTP 时终止 Python，确认进程退出后才复用容量。未能确认退出的 worker 会隔离容量，避免新旧进程叠加。任务超时不能证明远端写操作未生效。
+
 协议登录的浏览器辅助只获取登录所需的一个验证结果，不再额外等待注册流程结果；Chromium 路径查找复用已启动的 Playwright 驱动。验证计算分段让出事件循环，避免阻塞其他账号请求、进度日志和取消操作。
 
 实验性的 `BROWSER_REUSE_ENABLED=true` 可复用 Python、Playwright 和 Chromium 进程，默认 `false`。每次辅助验证仍新建并关闭独立浏览器 Context，Cookie、本地存储、代理和 User-Agent 按任务隔离。池按需启动，上限同为 `TASK_CONCURRENCY`；空闲 60 秒、完成 20 次任务或发生异常、取消、超时后回收进程。开关修改后需重启。默认关闭时，每次任务结束都会回收进程。测试使用本地模拟页面验证隔离、代理切换及冷暖启动耗时，不代表真实上游登录速度或成功率。
 
-`/api/system/config` 返回服务端固定并发；`/api/system/metrics` 的 `tasks`、`browsers` 展示任务和辅助浏览器的上限、占用与排队，`workers` 展示固定 HTTP worker 数量和租约情况。
+`/api/system/config` 返回服务端固定并发；`/api/system/metrics` 的 `tasks`、`browsers` 展示任务和辅助浏览器的上限、占用与排队，`workers` 展示固定 HTTP worker 数量和租约情况，`requests` 展示请求容量、占用和拒绝次数。
 
 `/api/system/metrics.stageTimings` 按固定阶段汇总排队、代理预检、HTTP 请求、密码/TOTP、工作区授权和浏览器启动/导航/验证等耗时。次数、失败数、取消数、平均值和最大值自进程启动累计；P50/P95 仅统计各阶段最近 512 次样本。每个账号的进度卡片提供“阶段耗时”，对应流水线响应的 `timings` 和 SSE 的 `account_timing` 事件。账号执行总耗时不含排队；父阶段包含子阶段，同一阶段多次调用累计，各项不能直接相加。全局统计不记录账号、代理地址或凭据，重启后清零。
 
@@ -74,15 +80,18 @@ HTTP worker 数量和 Chromium 辅助验证并发也使用 `TASK_CONCURRENCY`。
 
 协议登录标题右侧通过“不推送 / Sub2API / CPA”单选按钮选择目标，默认不推送；格式转换页面在工具栏显示同一组控件。两种服务分别使用独立配置弹窗；保存配置只写当前浏览器的加密工作区，不调用服务器设置保存接口。
 
-- **Sub2API**：填写地址和 Admin Key，读取 OpenAI 分组，选择一个或多个推送分组后保存。协议登录导出与推送共用账号参数，账号 `concurrency` 默认 50；Session 转换沿用转换区的导出参数。
+- **Sub2API**：填写地址和 Admin Key，读取 OpenAI 分组，选择一个或多个推送分组后保存。可勾选“为推送账号指定代理”，读取并选择 Sub2API 中的代理项；启用后批量导入和自动更新都会写入所选 `proxy_id`。协议登录导出与推送共用账号参数，账号 `concurrency` 默认 50；Session 转换沿用转换区的导出参数。
 - Session 转换会保留输入中的真实 `refresh_token` 和 `id_token`；Sub2API 推送也支持只有 `access_token` 的账号。只有 AT 时无法在过期后自动续期；协议登录生成 RT 的流程仍要求完整的 AT/RT。账号校验失败会指出序号和缺失字段，不会误报为地址或网络问题。
 - **CPA（CLIProxyAPI）**：填写服务地址和 Management Key，可测试连接。标准 CPA 的认证文件接口不支持 Sub2API 式账号分组；模型前缀用于路由。按当前 CPA 导出格式上传 `type: codex` 的 JSON 认证文件；文件名包含邮箱和账号/工作区标识的摘要，同一邮箱的个人及不同工作区不会互相覆盖，相同账号重复推送会更新同名文件。
 - **使用方式**：格式转换页面点击“推送转换结果”，范围沿用下载范围，格式由目标决定。协议登录选择目标并保存配置后，全部工作区 RT 完成时，按每个个人/工作区凭据自己的 `plan_type` 自动推送非 `free` 账号；`free` 或类型缺失的账号不推送。全部被过滤时显示跳过提示，不发送推送请求。协议登录不再提供个人/Business 手动推送按钮；手动下载仍包含所有类型，不受自动推送筛选影响。
-- **结果与重试**：逐项显示成功、失败或待核对；“重试失败项”只发送远端明确拒绝的条目。超时或未确认的结果需先在目标服务核对，避免重复导入。刷新不会自动重发。
+- **结果与重试**：发送前先在浏览器加密保存操作编号、条目标识和待确认记录。网络中断、未知响应或刷新后，尚未确认的条目显示“待核对”，阻止直接重复推送。点击“核对远端结果”只读取目标服务；确认此次凭据已存在则标记成功，完整查询确认不存在后才允许人工重试。已有不同凭据、重复账号或查询不完整时继续保留待核对。远端明确拒绝的可重试条目可直接人工重试；刷新不会自动重发。
+- **推送历史**：记录仅保存在当前浏览器。已确认成功的条目移除完整凭据副本，保留身份和状态；最多保留最近 50 次全部成功的操作。未完成、待核对和失败记录的必要凭据继续保留，清空登录数据时一并删除。
 
-浏览器只在读取分组、测试连接或推送时提交所选服务的管理密钥；普通登录和导出请求不携带这些密钥。`/api/push/*` 接口直接在请求内转发，完全绕过 SQLite 设置/账号仓库，不保存配置、文件或后台队列。转发不跟随重定向，避免将密钥发送到其他地址。推送与其他任务共享 `TASK_CONCURRENCY`，执行并发仍为 10。
+浏览器只在读取分组、测试连接、推送或核对时提交所选服务的管理密钥；普通登录和导出请求不携带这些密钥。`/api/push/*` 接口直接在请求内转发，完全绕过 SQLite 设置/账号仓库，不保存配置、文件或后台队列。转发不跟随重定向，避免将密钥发送到其他地址。推送与其他任务共享 `TASK_CONCURRENCY`，默认执行并发为 10。同目标同账号的在途操作顺序执行，协调器只暂存带随机盐的摘要和等待状态，请求结束后释放，不缓存凭据或推送结果。
 
-接口按参考项目实现：Sub2API 的 `GET /api/v1/admin/groups/all`、`POST /api/v1/admin/accounts/batch`（`x-api-key`，读取逐项 `results`）；CLIProxyAPI 的 `GET /v0/management/auth-files`、`POST /v0/management/auth-files?name=...`（`Authorization: Bearer`，原始 JSON 文件内容）。参考源码为本地 Sub2API `535486b93` 的 `account_handler.go`，以及 Cockpit Tools `b3fc6bd` 内附 CLIProxyAPI 的 `auth_files.go`、`handler.go`。
+只读核对接口为 `POST /api/push/sub2api/reconcile` 和 `POST /api/push/cpa/reconcile`。Sub2API 核对完整分页列表中的邮箱、工作区、所选分组及凭据版本；CPA 先读取完整文件列表，再通过 `GET /v0/management/auth-files/download?name=...` 核对内容。目标不支持读取完整凭据时显示待核对，需在目标服务人工确认。
+
+接口按参考项目实现：Sub2API 的 `GET /api/v1/admin/groups/all`、`GET /api/v1/admin/proxies/all`（旧版本回退 `GET /api/v1/admin/proxies`）、`POST /api/v1/admin/accounts/batch`（`x-api-key`，读取逐项 `results`）；CLIProxyAPI 的 `GET /v0/management/auth-files`、`POST /v0/management/auth-files?name=...`（`Authorization: Bearer`，原始 JSON 文件内容）。参考源码为本地 Sub2API `535486b93` 的 `account_handler.go`，以及 Cockpit Tools `b3fc6bd` 内附 CLIProxyAPI 的 `auth_files.go`、`handler.go`。
 
 ## 登录模式
 
@@ -117,10 +126,15 @@ HTTP worker 数量和 Chromium 辅助验证并发也使用 `TASK_CONCURRENCY`。
 - `server.js`、`src/config.js`：唯一入口和环境配置。
 - `src/converter.js`：页面服务和会话工具接口；`src/session-network.js`：复用代理和取消机制的测活、用量查询与退出会话。
 - `docs/index.html`、`docs/app.css`、`docs/app.js`、`docs/browser-store.js`：页面结构、样式、交互与浏览器存储。
+- `docs/workspace-schema.js`：浏览器主数据模型、快照迁移与历史收敛；`docs/operation-contract.js`：浏览器与服务端共享的操作/结果契约。
+- `login-service/src/services/auth/`：可独立导入的认证、Session、工作区、2FA 服务及 Flow 能力模块，通过 `composition.js` 注入传输、请求仓库和实时配置读取函数。
+- `login-service/src/shared/request-db.js`、`src/bootstrap/sqlite-runtime.js`：精简的请求内数据库；`src/http/`：请求容量和统一操作元数据/错误处理。
 - `login-service/src/api/routes/protocol-pipeline-routes.js`：账号登录流水线路由及依赖组装。
 - `login-service/`：内部登录、临时数据处理及导出模块，不是独立 npm 项目。
 
 页面使用 `/api/v2/*`，旧 `/api/login-icloud/api/v2/*` 路径仍兼容，但数据同样必须随请求提交。`/api/ready` 检查服务就绪。
+
+JSON/SSE 共享 `schemaVersion`、`operationId`、`requestId`；推送逐项结果携带 `itemId`、`status`、`code` 和 `retryable`。尚未解析出操作编号的早期错误只携带请求编号，避免错误关联到其他操作。通用错误保留兼容的 `error` 字段，并提供顶层 `code`、`message`；已建立的 SSE 流在错误事件中报告实际错误状态。新增操作编号只用于关联响应，不提供服务器任务恢复或查询。
 
 `/api/ready` 还会验证 Python、curl_cffi 和 Playwright Chromium，并实际启动 Sentinel 使用的完整 Chromium、打开本地测试页面；检查结果缓存 60 秒，不访问上游服务。`/api/health` 只检查进程存活。`/api/system/metrics` 可查看请求数量、错误率、平均/最大耗时和 HTTP worker 队列；指标只在内存保存汇总数字，不包含账号、URL、请求内容或凭据。
 
@@ -130,10 +144,13 @@ npm run test:browser
 npm run check
 npm run check:sensitive-paths
 npm run check:runtime
+npm run bench:runtime
 npm audit --omit=dev --registry=https://registry.npmjs.org
 ```
 
 `check` 检查所有项目 JS/MJS、HTML 内联脚本和 Python 语法。敏感文件检查覆盖 Git 跟踪文件及未忽略的新文件，正常的本地 `.env` 不会误报，但强行加入 Git 的 `.env` 会被拒绝。浏览器测试包含刷新导出、多标签页冲突、清空后旧数据回写及 BroadcastChannel 不可用的场景。GitHub Actions 在 Windows/Linux、Node 22.19/24 上执行检查，并另行构建和验证只读 Docker 容器。
+
+测试还覆盖取消后的真实 Python 退出、卡住的 worker 回收、请求容量拒绝、跨请求隔离、推送响应丢失/只读核对、保存队列合并及成功历史收敛。`bench:runtime` 只使用 100/500/1000 个合成账号和内存数据库，测量初始化及单账号增量写入，不读取 `.env`、不访问上游，也不代表真实登录速度。
 
 ## Docker 部署
 
