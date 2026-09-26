@@ -5,6 +5,7 @@ import { requestSignal } from '../../services/request-scope.js';
 import { monitorCoordinator, terminalLoginFailure } from '../../services/monitor-coordinator.js';
 import { selfLeaveWorkspaces } from '../../services/workspace-self-leave.js';
 import { wantsEventStream, runSseResponse } from '../batch/sse-runner.js';
+import { sendOperationError } from '../../http/operation-error.js';
 
 export function registerWorkspaceSelfLeaveRoutes(app, { requireAdmin, ensureDatabase, findAccountById, getConcurrency, protocolRequestNetwork, createFlow, updateAccount }) {
   app.post('/api/v2/accounts/self-leave', requireAdmin, async (req, res) => {
@@ -45,10 +46,10 @@ export function registerWorkspaceSelfLeaveRoutes(app, { requireAdmin, ensureData
         await runSseResponse(res, async sse => {
           sse.send('summary', await execute((event, data) => sse.send(event, data)));
           sse.send('done', { ok: true });
-        });
+        }, { errorOptions: { sanitize: sanitizeLogMessage } });
       } else res.json(await execute());
     } catch (error) {
-      if (!res.destroyed) res.status(400).json({ ok: false, error: sanitizeLogMessage(error.message) });
+      sendOperationError(res, error, { sanitize: sanitizeLogMessage });
     }
   });
 }

@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import express from 'express';
 import { createOperationalMetrics } from '../services/operational-metrics.js';
+import { createRequestAdmission } from '../http/request-admission.js';
+import { decorateOperationResponses, installOperationMetadata } from '../http/operation-metadata.js';
+import { sendOperationError } from '../http/operation-error.js';
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,96}$/;
 const ERROR_HANDLERS_INSTALLED = Symbol('errorHandlersInstalled');
@@ -56,7 +59,12 @@ function routeError(error, req, res, next) {
   const detail = DEPLOYMENT_MODE && safeStatus >= 500
     ? 'Internal server error'
     : String(error?.message || 'Request failed');
-  res.status(safeStatus).json({ ok: false, error: detail, code: error?.code || (safeStatus >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR'), requestId });
+  return sendOperationError(res, error, {
+    fallbackStatus: safeStatus,
+    fallbackCode: safeStatus >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR',
+    requestId,
+    sanitize: () => detail,
+  });
 }
 
 /** Mount after all application routes have been registered. */
@@ -76,12 +84,19 @@ export function installErrorHandlers(app) {
   return app;
 }
 
-export function createApp({ jsonLimit = '10mb', configure } = {}) {
+export function createApp({ jsonLimit = '10mb', configure, requestCapacity } = {}) {
   const app = express();
+  // Match the same path semantics used by request isolation and route policy.
+  // Otherwise /API/V2 could match a route while bypassing /api/v2 middleware.
+  app.enable('case sensitive routing');
   installHttpDefaults(app);
   app.locals.metrics = createOperationalMetrics();
+  app.locals.admission = createRequestAdmission({ ...(requestCapacity == null ? {} : { limit: requestCapacity }) });
   app.use(app.locals.metrics.middleware);
+  app.use(decorateOperationResponses);
+  app.use(app.locals.admission.middleware);
   app.use(express.json({ limit: jsonLimit, strict: true }));
+  app.use(installOperationMetadata);
   configure?.(app);
   return app;
 }

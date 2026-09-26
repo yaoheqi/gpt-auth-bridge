@@ -1,3 +1,5 @@
+import { executionError } from './execution-limits.js';
+
 function normalizeLimit(value, fallback = 1, max = Number.MAX_SAFE_INTEGER) {
   const parsed = Math.floor(Number(value));
   const safeFallback = Math.max(1, Math.min(max, Math.floor(Number(fallback)) || 1));
@@ -5,7 +7,9 @@ function normalizeLimit(value, fallback = 1, max = Number.MAX_SAFE_INTEGER) {
 }
 
 /** FIFO process-local semaphore whose limit may change between acquisitions. */
-export function createDynamicSemaphore(getLimit, { fallback = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+export function createDynamicSemaphore(getLimit, { fallback = 1, max = Number.MAX_SAFE_INTEGER,
+  maxPending = Infinity, queueTimeoutMs = 0,
+} = {}) {
   if (typeof getLimit !== 'function') throw new TypeError('getLimit must be a function');
   let active = 0;
   const queue = [];
@@ -26,20 +30,29 @@ export function createDynamicSemaphore(getLimit, { fallback = 1, max = Number.MA
     }
   };
 
-  const acquire = ({ signal } = {}) => new Promise((resolve, reject) => {
+  const acquire = ({ signal, timeoutMs = queueTimeoutMs } = {}) => new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(signal.reason); return; }
-    const cleanup = () => signal?.removeEventListener('abort', abort);
+    if (active >= currentLimit() && queue.length >= maxPending) {
+      reject(executionError('TASK_QUEUE_FULL', '任务队列已满，请稍后重试', 429));
+      return;
+    }
+    let timer;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
     const entry = { resolve: release => { cleanup(); resolve(release); } };
-    const abort = () => {
+    const remove = error => {
       const index = queue.indexOf(entry);
       if (index < 0) return;
       queue.splice(index, 1);
       cleanup();
-      reject(signal.reason);
+      reject(error);
     };
+    const abort = () => remove(signal.reason);
     signal?.addEventListener('abort', abort, { once: true });
     queue.push(entry);
     drain();
+    if (queue.includes(entry) && timeoutMs > 0) {
+      timer = setTimeout(() => remove(executionError('TASK_QUEUE_TIMEOUT', '任务排队超时，请稍后重试')), timeoutMs);
+    }
   });
 
   const run = async (fn, options = {}) => {

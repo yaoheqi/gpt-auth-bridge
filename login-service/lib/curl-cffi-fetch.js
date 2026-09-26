@@ -9,6 +9,8 @@ import { sanitizeLogMessage } from './log-sanitize.js';
 import { createProxyRoute } from './proxy-route.js';
 import { configuredTaskConcurrency } from './batch-concurrency.js';
 import { measureStage } from './stage-timing.js';
+import { TASK_QUEUE_TIMEOUT_MS, WORKER_CLEANUP_TIMEOUT_MS, taskQueueCapacity,
+  executionError, combineSignals, untilAborted, withinDeadline } from './execution-limits.js';
 
 // Python helpers remain alongside the internal business modules.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,9 +27,11 @@ function pythonExecutable() {
   return process.env.PYTHON3 || (process.platform === 'win32' ? 'python' : 'python3');
 }
 
-class CurlCffiWorker {
-  constructor(index) {
+export class CurlCffiWorker {
+  constructor(index, { spawnProcess = spawn, cleanupTimeoutMs = WORKER_CLEANUP_TIMEOUT_MS } = {}) {
     this.index = index;
+    this.spawnProcess = spawnProcess;
+    this.cleanupTimeoutMs = cleanupTimeoutMs;
     this.child = null;
     this.reader = null;
     this.pending = new Map();
@@ -36,13 +40,16 @@ class CurlCffiWorker {
 
   ensureChild() {
     if (this.child) return;
-    const child = spawn(pythonExecutable(), [SCRIPT], {
+    if (this.quarantined) throw executionError('WORKER_CLEANUP_TIMEOUT', 'HTTP worker 尚未退出，暂不可复用');
+    const child = this.spawnProcess(pythonExecutable(), [SCRIPT], {
       cwd: ROOT,
       windowsHide: true,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    this.poisoned = false;
+    this.exited = new Promise(resolve => child.once('close', resolve));
     this.reader = readline.createInterface({ input: child.stdout });
     this.reader.on('line', line => {
       let response;
@@ -60,17 +67,25 @@ class CurlCffiWorker {
       const failure = error instanceof Error ? error : new Error(String(error));
       for (const waiter of this.pending.values()) waiter.reject(failure);
       this.pending.clear();
+    };
+    const broken = error => { fail(error); void this.kill(error).catch(() => {}); };
+    child.on('error', broken);
+    child.stdin.on('error', broken);
+    child.on('close', code => {
+      fail(new Error(`curl_cffi session exited (${code ?? 'unknown'})`));
+      if (this.child !== child) return;
       this.reader?.close();
       this.reader = null;
       this.child = null;
-      try { child.kill(); } catch {}
-    };
-    child.on('error', fail);
-    child.stdin.on('error', fail);
-    child.on('close', code => fail(new Error(`curl_cffi session exited (${code ?? 'unknown'})`)));
+      this.quarantined = false;
+      this.stopping = null;
+    });
   }
 
-  request(payload, { budgetMs } = {}) {
+  async request(payload, { budgetMs, signal } = {}) {
+    await this.stopping;
+    signal?.throwIfAborted();
+    if (this.poisoned && this.child) throw DISPOSED_ERROR();
     this.ensureChild();
     const id = payload.id || `${process.pid}-${this.index}-${randomUUID()}`;
     const request = { ...payload, id };
@@ -79,17 +94,19 @@ class CurlCffiWorker {
       const budget = budgetMs ?? (payload.command ? 5000 : (Number.isFinite(seconds) && seconds > 0 ? seconds : 20) * 1000 + 2000);
       const timer = setTimeout(() => {
         const error = Object.assign(new Error('HTTP worker exceeded its deadline'), { code: 'UPSTREAM_TIMEOUT' });
-        this.cancel(id, error);
-        this.kill();
+        void this.cancel(id, error).catch(() => {});
       }, budget);
+      const abort = () => { void this.kill(signal.reason).catch(() => {}); };
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
       this.pending.set(id, {
-        resolve: value => { clearTimeout(timer); resolve(value); },
-        reject: error => { clearTimeout(timer); reject(error); },
+        resolve: value => { cleanup(); resolve(value); },
+        reject: error => { cleanup(); reject(error); },
       });
+      signal?.addEventListener('abort', abort, { once: true });
       try {
         this.child.stdin.write(`${JSON.stringify(request)}\n`);
       } catch (error) {
-        clearTimeout(timer);
+        cleanup();
         this.pending.delete(id);
         reject(error);
       }
@@ -98,12 +115,14 @@ class CurlCffiWorker {
 
   cancel(id, error = DISPOSED_ERROR()) {
     const waiter = this.pending.get(id);
-    if (!waiter) return;
-    this.pending.delete(id);
-    waiter.reject(error);
+    if (!waiter) return this.stopping || Promise.resolve();
+    // curl_cffi is synchronous in Python. Cancelling only the JS waiter leaves
+    // its network request alive; terminate the leased process instead.
+    return this.kill(error);
   }
 
   async start() {
+    await this.stopping;
     // Acknowledgement proves Python/curl_cffi are ready without upstream traffic.
     if (!this.child) await this.request({ command: 'reset' }, { budgetMs: 30_000 });
   }
@@ -112,25 +131,37 @@ class CurlCffiWorker {
     try {
       await this.request({ command: 'reset' });
     } catch (error) {
-      this.kill();
+      await this.kill();
       throw error;
     }
   }
 
-  kill() {
-    for (const waiter of this.pending.values()) waiter.reject(DISPOSED_ERROR());
+  kill(error = DISPOSED_ERROR()) {
+    if (this.stopping) return this.stopping;
+    this.poisoned = true;
+    for (const waiter of this.pending.values()) waiter.reject(error);
     this.pending.clear();
-    this.reader?.close();
-    this.reader = null;
     const child = this.child;
-    this.child = null;
-    try { child?.kill(); } catch {}
+    if (!child) return Promise.resolve();
+    try { child.kill(); } catch {}
+    const force = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, Math.min(1000, this.cleanupTimeoutMs / 2));
+    this.stopping = withinDeadline(this.exited, this.cleanupTimeoutMs).catch(error => {
+      // Never spawn a replacement while the old process may still be running.
+      this.quarantined = true;
+      throw error;
+    }).finally(() => {
+      clearTimeout(force);
+      if (!this.child) this.stopping = null;
+    });
+    return this.stopping;
   }
 }
 
 export class CurlCffiWorkerPool {
   constructor(size = configuredTaskConcurrency(), {
     workerFactory = index => new CurlCffiWorker(index),
+    maxPending = taskQueueCapacity(size), queueTimeoutMs = TASK_QUEUE_TIMEOUT_MS,
+    cleanupTimeoutMs = WORKER_CLEANUP_TIMEOUT_MS,
   } = {}) {
     if (!Number.isInteger(size) || size < 1) {
       throw new RangeError('Invalid HTTP worker pool bounds');
@@ -138,6 +169,9 @@ export class CurlCffiWorkerPool {
     this.size = size;
     this.minSize = size;
     this.workerFactory = workerFactory;
+    this.maxPending = maxPending;
+    this.queueTimeoutMs = queueTimeoutMs;
+    this.cleanupTimeoutMs = cleanupTimeoutMs;
     this.workers = [];
     this.waiters = [];
     this.nextIndex = 0;
@@ -165,12 +199,12 @@ export class CurlCffiWorkerPool {
           if (!worker.leased && !worker.releasing && !worker.maintenance) {
             worker.maintenance = Promise.resolve().then(() => {
               if (!this.closed) return worker.start?.();
-            }).catch(() => worker.kill?.()).finally(() => { worker.maintenance = null; });
+            }).catch(() => worker.kill?.()).catch(() => {}).finally(() => { worker.maintenance = null; });
           }
         }
       }, 30_000);
       this.maintenanceTimer.unref?.();
-    })().catch(error => { this.close(); throw error; }).finally(() => { this.starting = false; });
+    })().catch(async error => { await this.close(); throw error; }).finally(() => { this.starting = false; });
     return this.startPromise;
   }
 
@@ -179,10 +213,11 @@ export class CurlCffiWorkerPool {
     try {
       await worker.maintenance;
       if (this.closed) throw DISPOSED_ERROR();
-      await worker.start?.();
+      await untilAborted(worker.start?.(), signal);
       if (this.closed || signal?.aborted) throw DISPOSED_ERROR();
       return worker;
     } catch (error) {
+      if (signal?.aborted) await withinDeadline(worker.kill?.(), this.cleanupTimeoutMs).catch(() => {});
       await this.release(worker);
       throw error;
     }
@@ -194,10 +229,13 @@ export class CurlCffiWorkerPool {
     const idle = this.workers.find(worker => !worker.leased && !worker.releasing);
     if (idle) return this.lease(idle, signal);
     if (this.workers.length < this.size) return this.lease(this.createWorker(), signal);
+    if (this.waiters.length >= this.maxPending) return Promise.reject(executionError('TASK_QUEUE_FULL', 'HTTP worker 队列已满，请稍后重试', 429));
     return new Promise((resolve, reject) => {
+      let timer;
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
       const waiter = {
-        resolve: worker => { signal?.removeEventListener('abort', abort); resolve(worker); },
-        reject: error => { signal?.removeEventListener('abort', abort); reject(error); },
+        resolve: worker => { cleanup(); resolve(worker); },
+        reject: error => { cleanup(); reject(error); },
         signal,
       };
       const abort = () => {
@@ -207,6 +245,11 @@ export class CurlCffiWorkerPool {
       };
       signal?.addEventListener('abort', abort, { once: true });
       this.waiters.push(waiter);
+      if (this.queueTimeoutMs > 0) timer = setTimeout(() => {
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) this.waiters.splice(index, 1);
+        waiter.reject(executionError('TASK_QUEUE_TIMEOUT', 'HTTP worker 排队超时，请稍后重试'));
+      }, this.queueTimeoutMs);
     });
   }
 
@@ -215,14 +258,30 @@ export class CurlCffiWorkerPool {
     if (worker.releasing) return worker.releasing;
     worker.releasing = (async () => {
       // Keep the lease while resetting: cookies must never cross accounts.
-      if (!this.closed) {
-        try { await worker.reset(); } catch { worker.kill?.(); }
+      if (!this.closed && !worker.poisoned) {
+        try { await withinDeadline(worker.reset(), this.cleanupTimeoutMs); }
+        catch { await withinDeadline(worker.kill?.(), this.cleanupTimeoutMs); }
+      } else {
+        await withinDeadline(worker.kill?.(), this.cleanupTimeoutMs);
       }
     })();
-    await worker.releasing;
+    try { await worker.releasing; }
+    catch (error) {
+      // Cleanup has a response deadline, but capacity remains reserved. If the
+      // OS eventually confirms exit, that confirmation can safely restore it.
+      if (worker.exited) void worker.exited.then(() => {
+        if (worker.child || !worker.leased || this.closed) return;
+        this.returnWorker(worker);
+      }).catch(() => {});
+      throw error;
+    }
+    this.returnWorker(worker);
+  }
+
+  returnWorker(worker) {
     worker.releasing = null;
     worker.leased = false;
-    if (this.closed) { worker.kill?.(); return; }
+    if (this.closed) return;
     const next = this.waiters.shift();
     if (next) this.lease(worker, next.signal).then(next.resolve, next.reject);
   }
@@ -240,11 +299,13 @@ export class CurlCffiWorkerPool {
   }
 
   close() {
-    if (this.closed) return;
+    if (this.closed) return this.closing;
     this.closed = true;
     clearInterval(this.maintenanceTimer);
     for (const waiter of this.waiters.splice(0)) waiter.reject(DISPOSED_ERROR());
-    for (const worker of this.workers.splice(0)) worker.kill?.();
+    const stopping = this.workers.splice(0).map(worker => withinDeadline(worker.kill?.(), this.cleanupTimeoutMs));
+    this.closing = Promise.allSettled(stopping);
+    return this.closing;
   }
 }
 
@@ -252,21 +313,25 @@ const workerPool = new CurlCffiWorkerPool();
 
 export function httpWorkerStats() { return workerPool.stats(); }
 export function startHttpWorkers() { return workerPool.start(); }
-export function closeHttpWorkers() { workerPool.close(); }
+export function closeHttpWorkers() { return workerPool.close(); }
 
-export function createCurlCffiFetch(proxyUrl = '', { direct = false, pool = workerPool } = {}) {
+export function createCurlCffiFetch(proxyUrl = '', { direct = false, pool = workerPool,
+  routeFactory = createProxyRoute, cleanupTimeoutMs = WORKER_CLEANUP_TIMEOUT_MS,
+} = {}) {
   let lease = null;
   let leasePromise = null;
   let disposed = false;
   let routePromise = null;
+  let disposalPromise;
+  const lifetimeSignal = requestSignal();
+  const disposal = new AbortController();
   const selectedProxy = direct ? '' : (proxyUrl || process.env.APP_PROXY || process.env.APP_HTTP_PROXY || process.env.PROXY_URL || '');
   const pendingRequestIds = new Set();
 
   const acquireLease = (signal) => {
     if (lease) return Promise.resolve(lease);
     if (!leasePromise) {
-      const signals = [requestSignal(), signal].filter(Boolean);
-      leasePromise = measureStage('http_queue', () => pool.acquire({ signal: signals.length ? AbortSignal.any(signals) : undefined })).then(worker => {
+      leasePromise = measureStage('http_queue', () => pool.acquire({ signal })).then(worker => {
         if (disposed) {
           return pool.release(worker).then(() => { throw DISPOSED_ERROR(); });
         }
@@ -282,35 +347,31 @@ export function createCurlCffiFetch(proxyUrl = '', { direct = false, pool = work
 
   const fetcher = async (input, init = {}) => {
     if (disposed) throw DISPOSED_ERROR();
-    if (init.signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
-    routePromise ||= createProxyRoute(selectedProxy);
-    const route = await routePromise;
-    if (disposed) { await route.close(); throw DISPOSED_ERROR(); }
-    const worker = await acquireLease(init.signal);
-    if (disposed) throw DISPOSED_ERROR();
-    const url = String(input?.url || input || '');
-    const method = String(init.method || 'GET').toUpperCase();
-    const headers = Object.fromEntries(new Headers(init.headers || {}).entries());
-    const body = await encodeCurlCffiBody(init.body);
-    if (disposed) throw DISPOSED_ERROR();
-    init.signal?.throwIfAborted();
-    const requestId = `${process.pid}-${randomUUID()}`;
-    pendingRequestIds.add(requestId);
-    let response;
+    const signal = combineSignals(lifetimeSignal, requestSignal(), init.signal, disposal.signal);
+    signal.throwIfAborted();
+    const cancelCall = () => { void fetcher.dispose(signal.reason).catch(() => {}); };
+    signal.addEventListener('abort', cancelCall, { once: true });
     try {
-      response = await new Promise((resolve, reject) => {
-        let settled = false;
-        const cleanup = () => init.signal?.removeEventListener?.('abort', onAbort);
-        const settleReject = error => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          worker.cancel(requestId, error);
-          reject(error);
-        };
-        const onAbort = () => settleReject(new DOMException('The operation was aborted', 'AbortError'));
-        init.signal?.addEventListener?.('abort', onAbort, { once: true });
-        measureStage('http_request', () => worker.request({
+      routePromise ||= Promise.resolve().then(() => routeFactory(selectedProxy)).then(route => {
+        if (disposed) void withinDeadline(route.close(), cleanupTimeoutMs).catch(() => {});
+        return route;
+      });
+      const route = await withinDeadline(untilAborted(routePromise, signal), 15_000,
+        executionError('PROXY_ROUTE_TIMEOUT', '代理路由连接超时'));
+      if (disposed) throw DISPOSED_ERROR();
+      const worker = await acquireLease(signal);
+      if (disposed) throw DISPOSED_ERROR();
+      const url = String(input?.url || input || '');
+      const method = String(init.method || 'GET').toUpperCase();
+      const headers = Object.fromEntries(new Headers(init.headers || {}).entries());
+      const body = await encodeCurlCffiBody(init.body);
+      if (disposed) throw DISPOSED_ERROR();
+      signal.throwIfAborted();
+      const requestId = `${process.pid}-${randomUUID()}`;
+      pendingRequestIds.add(requestId);
+      let response;
+      try {
+        response = await measureStage('http_request', () => worker.request({
           id: requestId,
           url,
           method,
@@ -321,24 +382,19 @@ export function createCurlCffiFetch(proxyUrl = '', { direct = false, pool = work
           direct,
           // Bound edge/challenge waits so a blocked egress fails fast with a useful status.
           timeout: Math.max(1, Math.min(120, Number(init.timeout || process.env.CURL_CFFI_TIMEOUT_SECONDS || 20) || 20)),
-        })).then(value => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(value);
-        }, settleReject);
+        }, { signal }));
+      } finally {
+        pendingRequestIds.delete(requestId);
+      }
+      const responseHeaders = new Headers();
+      for (const [key, value] of response.headers || []) responseHeaders.append(key, value);
+      const result = new Response(Buffer.from(response.body || '', 'base64'), {
+        status: Number(response.status || 500),
+        headers: responseHeaders,
       });
-    } finally {
-      pendingRequestIds.delete(requestId);
-    }
-    const responseHeaders = new Headers();
-    for (const [key, value] of response.headers || []) responseHeaders.append(key, value);
-    const result = new Response(Buffer.from(response.body || '', 'base64'), {
-      status: Number(response.status || 500),
-      headers: responseHeaders,
-    });
-    Object.defineProperty(result, 'url', { value: response.url || url });
-    return result;
+      Object.defineProperty(result, 'url', { value: response.url || url });
+      return result;
+    } finally { signal.removeEventListener('abort', cancelCall); }
   };
 
   fetcher.proxyUrl = direct ? '' : (proxyUrl || process.env.APP_PROXY || process.env.APP_HTTP_PROXY || process.env.PROXY_URL || '');
@@ -346,23 +402,33 @@ export function createCurlCffiFetch(proxyUrl = '', { direct = false, pool = work
   fetcher.dispatcher = {};
   fetcher.isolated = true;
   let unregisterCleanup = () => {};
-  fetcher.dispose = async () => {
-    unregisterCleanup();
-    if (disposed) return;
+  const onLifetimeAbort = () => { void fetcher.dispose(lifetimeSignal.reason).catch(() => {}); };
+  fetcher.dispose = (reason = DISPOSED_ERROR()) => {
+    if (disposed) return disposalPromise || Promise.resolve();
     disposed = true;
-    // Closing the tunnel also releases pending network operations before worker reset.
-    await routePromise?.then(route => route.close()).catch(() => {});
-    if (lease) {
-      for (const id of pendingRequestIds) lease.cancel(id);
-      const current = lease;
-      lease = null;
-      leasePromise = null;
-      await pool.release(current);
-      return;
-    }
-    await leasePromise?.catch(() => {});
+    lifetimeSignal?.removeEventListener('abort', onLifetimeAbort);
+    disposal.abort(reason);
+    const current = lease;
+    const pendingLease = leasePromise;
+    lease = null;
+    leasePromise = null;
+    // A stuck proxy close must not postpone termination of the Python request.
+    const cancel = current && Promise.all([...pendingRequestIds].map(id => current.cancel(id, reason)));
+    const release = (async () => {
+      if (current) {
+        try { await cancel; }
+        finally { await pool.release(current); }
+      }
+      else await pendingLease?.catch(() => {});
+    })();
+    const closeRoute = routePromise?.then(route => route.close());
+    disposalPromise = withinDeadline(Promise.allSettled([release, closeRoute]), cleanupTimeoutMs)
+      .finally(unregisterCleanup);
+    return disposalPromise;
   };
   unregisterCleanup = registerRequestCleanup(fetcher.dispose);
+  lifetimeSignal?.addEventListener('abort', onLifetimeAbort, { once: true });
+  if (lifetimeSignal?.aborted) onLifetimeAbort();
   return fetcher;
 }
 

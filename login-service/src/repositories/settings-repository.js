@@ -97,7 +97,9 @@ export class SettingsRepository {
       this.cache.set(key, normalized);
       return clone(normalized);
     });
-    this.writeQueue = operation.catch(() => {});
+    // Serialize future writes without retaining this caller's credential clone
+    // in the fulfilled queue promise after the HTTP context has been disposed.
+    this.writeQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
 

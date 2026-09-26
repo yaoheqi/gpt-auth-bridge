@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 export const requests = new AsyncLocalStorage();
+export const executions = new AsyncLocalStorage();
 export const browserRequest = () => requests.getStore();
 
 // Existing business services use the same repository interface, but each HTTP
@@ -11,6 +12,7 @@ export function requestScoped(name, fallback) {
     get(_target, key) {
       const context = browserRequest();
       if (context?.closed) throw new Error('请求已结束');
+      requestSignal()?.throwIfAborted();
       const target = context?.[name] || fallback;
       const value = target[key];
       return typeof value === 'function' ? value.bind(target) : value;
@@ -31,10 +33,12 @@ export function requestMap(name) {
 
 export function registerRequestCleanup(cleanup) {
   const context = browserRequest();
-  if (!context) return () => {};
-  if (context.closed) { Promise.resolve(cleanup()).catch(() => {}); return () => {}; }
-  context.cleanups.add(cleanup);
-  return () => context.cleanups.delete(cleanup);
+  const execution = executions.getStore();
+  if (context?.closed || execution?.closed) { Promise.resolve().then(cleanup).catch(() => {}); return () => {}; }
+  context?.cleanups.add(cleanup);
+  execution?.cleanups.add(cleanup);
+  return () => { context?.cleanups.delete(cleanup); execution?.cleanups.delete(cleanup); };
 }
 
-export function requestSignal() { return browserRequest()?.controller.signal; }
+// Account scopes already combine the request, caller and account deadline.
+export function requestSignal() { return executions.getStore()?.signal || browserRequest()?.controller.signal; }

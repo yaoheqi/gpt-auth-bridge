@@ -12,7 +12,7 @@ export function registerSystemRoutes(app, {
 }) {
   // Mounted behind the application's administrator authentication middleware.
   app.get('/api/system/metrics', (_req, res) => res.json({
-    ok: true, http: metrics?.snapshot(), workers: workerStats?.(), tasks: accountTaskStats(), browsers: browserSentinelStats(),
+    ok: true, http: metrics?.snapshot(), requests: app.locals.admission?.snapshot(), workers: workerStats?.(), tasks: accountTaskStats(), browsers: browserSentinelStats(),
     stageTimings: stageMetrics.snapshot(), timingSampleLimit: 512, uptimeSeconds: Math.floor(process.uptime()),
   }));
   app.get('/api/system/config', (_req, res) => res.json({ ok: true, taskConcurrency: configuredTaskConcurrency() }));

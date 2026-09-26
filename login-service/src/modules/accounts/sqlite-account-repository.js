@@ -13,7 +13,7 @@ export function inferSourceType(record = {}) {
 }
 
 export class SqliteAccountRepository {
-  constructor(db, secrets, { normalizeAccount = normalizeDbAccount, now = () => new Date().toISOString(), writeBatchWindowMs = 12 } = {}) {
+  constructor(db, secrets, { normalizeAccount = normalizeDbAccount, now = () => new Date().toISOString(), writeBatchWindowMs = 12, recordOutbox = true } = {}) {
     this.db = db;
     this.secrets = secrets;
     this.normalizeAccount = normalizeAccount;
@@ -24,6 +24,7 @@ export class SqliteAccountRepository {
     this.writeBatchTimer = null;
     this.writeBatchWindowMs = writeBatchWindowMs;
     this.ready = null;
+    this.recordOutbox = recordOutbox;
   }
 
   initialize() {
@@ -101,7 +102,11 @@ export class SqliteAccountRepository {
       }
       return accountId;
     });
-    this.refreshFromDatabase();
+    const hydrated = this.#hydrateAccountById(id);
+    const existing = this.state.accounts.find(account => String(account.id) === String(id));
+    if (existing) Object.assign(existing, hydrated);
+    else this.state.accounts.push(hydrated);
+    this.state.updatedAt = this.now();
     return this.findById(id);
   }
 
@@ -116,7 +121,7 @@ export class SqliteAccountRepository {
     const result = withTransaction(this.db, () => {
       const deleteStmt = this.db.prepare('DELETE FROM accounts WHERE id = ?');
       for (const row of matched) deleteStmt.run(row.id);
-      this.db.prepare(`
+      if (this.recordOutbox) this.db.prepare(`
         INSERT INTO outbox(kind, payload_json, status, attempts, available_at, created_at)
         VALUES ('account_deleted', ?, 'pending', 0, ?, ?)
       `).run(JSON.stringify({ ids: matched.map((row) => row.id) }), nowIso(), nowIso());
@@ -168,7 +173,7 @@ export class SqliteAccountRepository {
       account.updatedAt = this.now();
       account.version = Number(account.version || 1) + 1;
       return account;
-    });
+    }, { ids: [key] });
   }
 
   async updateMany(ids, patcher) {
@@ -186,7 +191,7 @@ export class SqliteAccountRepository {
         updated.push(account);
       }
       return updated;
-    });
+    }, { ids: wanted == null ? null : [...wanted] });
   }
 
   /** Execute an account import application transaction on the serialized state. */
@@ -199,27 +204,28 @@ export class SqliteAccountRepository {
     }));
   }
 
-  async save() {
+  async save({ ids = null } = {}) {
     await this.ensureReady();
     const stamp = this.now();
     this.state.updatedAt = stamp;
     withTransaction(this.db, () => {
-      const ids = [...new Set(this.state.accounts.map((account) => String(account.id || '').trim()).filter(Boolean))];
-      if (ids.length) {
-        const placeholders = ids.map(() => '?').join(', ');
-        this.db.prepare(`DELETE FROM accounts WHERE id NOT IN (${placeholders})`).run(...ids);
-      } else {
-        this.db.prepare('DELETE FROM accounts').run();
+      const selected = ids == null ? null : new Set(ids.map(String));
+      if (selected == null) {
+        const currentIds = [...new Set(this.state.accounts.map((account) => String(account.id || '').trim()).filter(Boolean))];
+        if (currentIds.length) {
+          const placeholders = currentIds.map(() => '?').join(', ');
+          this.db.prepare(`DELETE FROM accounts WHERE id NOT IN (${placeholders})`).run(...currentIds);
+        } else this.db.prepare('DELETE FROM accounts').run();
       }
-      for (const account of this.state.accounts) this.#upsertAccount(account, stamp);
+      for (const account of this.state.accounts) if (selected == null || selected.has(String(account.id))) this.#upsertAccount(account, stamp);
     });
     return this.state;
   }
 
-  async write(mutator) {
+  async write(mutator, { ids = null } = {}) {
     await this.ensureReady();
     return new Promise((resolve, reject) => {
-      this.pendingWrites.push({ mutator, resolve, reject });
+      this.pendingWrites.push({ mutator, resolve, reject, ids });
       if (this.pendingWrites.length === 1) {
         this.writeBatchTimer = setTimeout(() => {
           this.writeBatchTimer = null;
@@ -241,14 +247,15 @@ export class SqliteAccountRepository {
     const operation = this.writeQueue.then(async () => {
       const results = [];
       for (const item of batch) results.push(await item.mutator(this.state));
-      await this.save();
+      const ids = batch.some(item => item.ids == null) ? null : [...new Set(batch.flatMap(item => item.ids))];
+      await this.save({ ids });
       batch.forEach((item, index) => item.resolve(results[index]));
       return results;
     }).catch(error => {
       batch.forEach(item => item.reject(error));
       throw error;
     });
-    this.writeQueue = operation.catch(() => {});
+    this.writeQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
 

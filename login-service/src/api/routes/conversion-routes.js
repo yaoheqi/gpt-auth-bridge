@@ -1,6 +1,7 @@
 import { buildSub2ApiExport } from '../../../lib/export-sub2api.js';
 import { registerOpenAIAgentIdentity } from '../../../lib/openai-agent-identity.js';
 import { decodeJwtPayload, firstNonEmpty, getNestedRecord } from '../../../lib/jwt-utils.js';
+import { sendOperationError } from '../../http/operation-error.js';
 
 function parseObject(value, label = 'Session JSON') {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
@@ -74,9 +75,8 @@ export function registerConversionRoutes(app, {
       res.setHeader('Cache-Control', 'no-store');
       res.json(exported);
     } catch (error) {
-      res.status(400).json({
-        ok: false,
-        error: { code: 'INVALID_SESSION_CONVERSION', message: error instanceof Error ? error.message : String(error) },
+      sendOperationError(res, error, {
+        fallbackCode: 'INVALID_SESSION_CONVERSION', errorShape: 'object',
         requestId: String(req.requestId || req.get?.('x-request-id') || '').trim() || undefined,
       });
     }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-export function requestIdMiddleware(req, _res, next) {
-  req.requestId = String(req.get('x-request-id') || randomUUID());
+export function requestIdMiddleware(req, res, next) {
+  req.requestId = res.locals?.requestId || randomUUID();
   next();
 }
 

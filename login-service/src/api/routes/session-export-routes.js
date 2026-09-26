@@ -1,17 +1,13 @@
 import { buildSessionExportReport, sessionExportText } from '../../services/session-export-service.js';
+import { sendOperationError } from '../../http/operation-error.js';
 
 function requestId(req) {
   return String(req?.requestId || req?.res?.locals?.requestId || req?.get?.('x-request-id') || '').trim() || undefined;
 }
 
 function routeError(res, req, error, fallbackCode = 'SESSION_EXPORT_FAILED', fallbackStatus = 400) {
-  const status = Number(error?.statusCode || fallbackStatus);
-  const code = String(error?.code || fallbackCode);
-  const message = error instanceof Error ? error.message : String(error);
-  return res.status(status >= 400 && status <= 599 ? status : fallbackStatus).json({
-    ok: false,
-    error: { code, message },
-    requestId: requestId(req),
+  return sendOperationError(res, error, {
+    fallbackCode, fallbackStatus, errorShape: 'object', requestId: requestId(req),
   });
 }
 

@@ -3,6 +3,7 @@ import { requestSignal } from '../src/services/request-scope.js';
 import { runAccountTask } from './task-concurrency.js';
 import { performance } from 'node:perf_hooks';
 import { publicStageTimings } from './stage-timing.js';
+import { operationMetadata } from '../../docs/operation-contract.js';
 
 export class SSEChannel {
   constructor(res, { maxBufferedBytes = 16 * 1024 * 1024, drainTimeoutMs = 30_000 } = {}) {
@@ -56,10 +57,10 @@ export class SSEChannel {
         });
       }
       const payload = {
-        schemaVersion: safe.schemaVersion || '1.0.0',
         at: safe.at || safe.time || new Date().toISOString(),
         level: safe.level || (event === 'error' ? 'error' : 'info'),
         ...safe,
+        ...operationMetadata(this.res.locals?.operationId, this.res.locals?.requestId),
       };
       if (this.res.locals?.browserSnapshot) {
         const id = data?.id || data?.accountId;

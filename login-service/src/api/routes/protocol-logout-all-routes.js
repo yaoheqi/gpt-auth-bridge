@@ -4,6 +4,7 @@ import { normalizeAccountIds } from '../../services/account-selection.js';
 import { monitorCoordinator, terminalLoginFailure } from '../../services/monitor-coordinator.js';
 import { wantsEventStream, runSseResponse } from '../batch/sse-runner.js';
 import { withCachedWebSession } from '../../services/cached-web-session.js';
+import { sendOperationError } from '../../http/operation-error.js';
 
 export function registerProtocolLogoutAllRoutes(app, {
   requireAdmin, ensureDatabase, findAccountById, getConcurrency, protocolRequestNetwork, createFlow, clearAuthState, persistSession,
@@ -56,10 +57,10 @@ export function registerProtocolLogoutAllRoutes(app, {
         await runSseResponse(res, async sse => {
           sse.send('summary', await execute((event, data) => sse.send(event, data)));
           sse.send('done', { ok: true });
-        });
+        }, { errorOptions: { sanitize: sanitizeLogMessage } });
       } else res.json(await execute());
     } catch (error) {
-      if (!res.destroyed) res.status(400).json({ ok: false, error: sanitizeLogMessage(error.message) });
+      sendOperationError(res, error, { sanitize: sanitizeLogMessage });
     }
   });
 }

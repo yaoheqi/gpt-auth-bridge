@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { createSemaphore } from './async-semaphore.js';
 import { configuredTaskConcurrency } from './batch-concurrency.js';
 import { measureStage, recordStageTiming } from './stage-timing.js';
-import { requestSignal } from '../src/services/request-scope.js';
+import { registerRequestCleanup, requestSignal } from '../src/services/request-scope.js';
+import { TASK_QUEUE_TIMEOUT_MS, WORKER_CLEANUP_TIMEOUT_MS, taskQueueCapacity,
+  combineSignals, withinDeadline } from './execution-limits.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const browserReuseEnabled = (env = process.env) => /^(1|true|yes)$/i.test(String(env.BROWSER_REUSE_ENABLED || 'false'));
@@ -129,8 +131,10 @@ class BrowserWorker {
 
 export class BrowserWorkerPool {
   constructor({ size = configuredTaskConcurrency(), reuse = browserReuseEnabled(), idleMs = 60_000, maxTasks = 20,
+    maxPending = taskQueueCapacity(size), queueTimeoutMs = TASK_QUEUE_TIMEOUT_MS, cleanupTimeoutMs = WORKER_CLEANUP_TIMEOUT_MS,
     workerFactory = root => new BrowserWorker(root) } = {}) {
-    this.semaphore = createSemaphore(size);
+    this.semaphore = createSemaphore(size, { maxPending, queueTimeoutMs });
+    this.cleanupTimeoutMs = cleanupTimeoutMs;
     this.reuse = reuse;
     this.idleMs = idleMs;
     this.maxTasks = maxTasks;
@@ -143,22 +147,29 @@ export class BrowserWorkerPool {
 
   async retire(worker) {
     clearTimeout(worker.idleTimer);
-    try { await worker.stop(); } finally { this.workers.delete(worker); }
+    worker.busy = true;
+    worker.retiring = true;
+    // Keep a timed-out process visible and ineligible for replacement until its
+    // actual termination completes. Merely giving up waiting is not an exit.
+    const stopped = Promise.resolve().then(() => worker.stop()).then(() => this.workers.delete(worker));
+    await withinDeadline(stopped, this.cleanupTimeoutMs);
   }
 
   async run(payload, { root = ROOT, signal = requestSignal(), timeoutMs } = {}) {
-    const combined = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
+    const combined = combineSignals(requestSignal(), signal, this.controller.signal);
     const release = await measureStage('browser_queue', () => this.semaphore.acquire({ signal: combined }));
     let worker;
     let succeeded = false;
+    let unregisterCleanup = () => {};
     try {
       combined.throwIfAborted();
       // A stopped slot is not replaced until all its processes have exited.
-      await Promise.all([...this.workers].filter(item => item.dead).map(item => this.retire(item)));
+      await Promise.all([...this.workers].filter(item => item.dead || item.retiring).map(item => this.retire(item)));
       await Promise.all([...this.workers].filter(item => !item.busy && item.root !== root).map(item => this.retire(item)));
       combined.throwIfAborted();
       worker = [...this.workers].find(item => !item.busy && !item.dead && item.root === root);
       if (!worker) { worker = this.workerFactory(root); this.workers.add(worker); }
+      unregisterCleanup = registerRequestCleanup(() => this.retire(worker));
       worker.busy = true;
       clearTimeout(worker.idleTimer);
       if (worker.tasks) this.reused++;
@@ -177,7 +188,7 @@ export class BrowserWorkerPool {
             worker.idleTimer.unref?.();
           }
         }
-      } finally { release(); }
+      } finally { unregisterCleanup(); release(); }
     }
   }
 

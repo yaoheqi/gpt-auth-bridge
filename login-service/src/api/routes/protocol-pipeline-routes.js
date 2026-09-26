@@ -1,3 +1,4 @@
+import { sendOperationError } from '../../http/operation-error.js';
 import { mapWithConcurrency } from '../../../lib/sse.js';
 import { wantsEventStream, runSseResponse } from '../batch/sse-runner.js';
 import { normalizeAccountIds } from '../../services/account-selection.js';
@@ -18,7 +19,7 @@ export function registerBrowserSessionProbeRoute(app, { requireAdmin, ensureData
       }
       res.json({ ok: true, results: monitorCoordinator.claim(accounts, req.body.monitorOwner), ttlMs: monitorCoordinator.ttlMs });
     } catch (error) {
-      if (!res.destroyed) res.status(400).json({ ok: false, error: error.message });
+      if (!res.destroyed) sendOperationError(res, error);
     }
   });
   app.post('/api/v2/accounts/session-probe', requireAdmin, async (req, res) => {
@@ -49,7 +50,7 @@ export function registerBrowserSessionProbeRoute(app, { requireAdmin, ensureData
       });
       res.json({ ok: true, results, concurrency });
     } catch (error) {
-      if (!res.destroyed) res.status(400).json({ ok: false, error: error.message });
+      if (!res.destroyed) sendOperationError(res, error);
     }
   });
 }
@@ -118,7 +119,7 @@ export function registerProtocolPipelineRoutes(app, { requireAdmin, ensureDataba
       const results = await execute();
       res.json({ ok: true, concurrency, workspaceMode, results, success: results.filter(item => item.ok).length, failed: results.filter(item => !item.ok).length });
     } catch (error) {
-      res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      sendOperationError(res, error);
     }
   });
 }
