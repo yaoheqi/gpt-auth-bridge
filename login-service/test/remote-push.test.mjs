@@ -162,7 +162,9 @@ test('CPA connection check is read-only and separate requests cannot reuse earli
     return Response.json({ files: [{ name: 'fixture.json' }] });
   });
   const first = await push('cpa/check', { settings: { baseUrl: 'https://cpa.test', managementKey: 'fixture-key' } });
-  assert.deepEqual(first.body, { ok: true, files: 1 });
+  assert.equal(first.body.ok, true);
+  assert.equal(first.body.files, 1);
+  assert.equal(first.body.schemaVersion, '1.0.0');
   const second = await push('cpa/check', { settings: { baseUrl: 'https://cpa.test' } });
   assert.equal(second.status, 400);
   assert.equal(calls, 1);
