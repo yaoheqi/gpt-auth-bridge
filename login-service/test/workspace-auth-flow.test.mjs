@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Cookie, CookieJar } from 'tough-cookie';
 import makeFetchCookie from 'fetch-cookie';
@@ -15,20 +14,10 @@ import { hasTotpSecret, generateTotpCode, validateTotpSecret } from '../lib/totp
 import { withCachedWebSession, sessionApiError } from '../src/services/cached-web-session.js';
 import { readLogoutAllResponse } from '../src/services/logout-all-response.js';
 import { randomUUID } from 'node:crypto';
+import { createOpenAIJsonAuthFlow } from '../src/services/auth/openai-json-auth-flow.js';
 
-// Exercise the production class without booting server.js (database, listeners,
-// background jobs and real curl workers). Only external services are replaced.
-const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-const classStart = source.indexOf('class OpenAIJsonAuthFlow {');
-const classEnd = source.indexOf('function extractPhoneCode', classStart);
-assert.ok(classStart >= 0 && classEnd > classStart);
-// Include the whole source line so a stray expression prefix cannot turn a
-// broken production declaration into a working test-only function binding.
-const passwordHelperLine = source.indexOf('function resolveOpenAiAccountPassword(');
-const passwordHelperStart = source.lastIndexOf('\n', passwordHelperLine);
-const passwordHelperEnd = source.indexOf('\n}', passwordHelperLine) + 2;
-assert.ok(passwordHelperLine >= 0 && passwordHelperEnd > passwordHelperLine);
-const passwordHelper = source.slice(passwordHelperStart, passwordHelperEnd);
+// Import the same class factory the application composes. External boundaries
+// can be replaced without booting a server or constructing real workers.
 const bindings = {
   ...authUrls, ...oauth, ...workspaces, openOAuthPage, preflightProxyEgress, readWorkspacePagePayload, Cookie, firstNonEmpty,
   protocolLoginCredentialIssue, resolveAccountLoginMethod, hasTotpSecret, generateTotpCode, validateTotpSecret, sessionApiError, readLogoutAllResponse, randomUUID,
@@ -36,8 +25,7 @@ const bindings = {
   isAgentIdentityRecord: () => false,
 };
 function authFlowClass(overrides = {}) {
-  const dependencies = { ...bindings, ...overrides };
-  return new Function(...Object.keys(dependencies), `${passwordHelper}\nreturn (${source.slice(classStart, classEnd).trim()});`)(...Object.values(dependencies));
+  return createOpenAIJsonAuthFlow({ ...bindings, ...overrides });
 }
 const AuthFlow = authFlowClass();
 const CONSENT = `${authUrls.AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`;

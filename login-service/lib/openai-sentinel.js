@@ -109,12 +109,14 @@ export function createBrowserSentinelLimiter(concurrency = getBrowserSentinelCon
 export const browserSentinelStats = () => browserWorkerPool.stats();
 
 export async function solveTurnstileViaBrowserSentinel(deviceID, flow, {
-  proxyUrl = '', userAgent = '', repoRoot, defaultUserAgent,
+  proxyUrl = '', userAgent = '', repoRoot, defaultUserAgent, authBaseUrl = 'https://auth.openai.com',
 } = {}) {
   try {
     const parsed = await browserWorkerPool.run({
       proxyUrl: String(proxyUrl || '').trim(),
       userAgent: normalizeBrowserUserAgent(userAgent, defaultUserAgent),
+      authBaseUrl: String(authBaseUrl || 'https://auth.openai.com').trim(),
+      deadlineSeconds: 75,
     }, { root: repoRoot, signal: requestSignal() });
     const raw = String(parsed.sentinel_token || '').trim();
     if (!raw) throw new Error('浏览器 Sentinel 未返回 token');
@@ -205,6 +207,7 @@ export function createOpenAISentinelTokenFetcher({
             userAgent: fp?.userAgent || defaultUserAgent,
             repoRoot,
             defaultUserAgent,
+            authBaseUrl: settings.websiteUrl || 'https://auth.openai.com',
           });
           sentinelTokenCache.set(key, { token: browserToken, expiresAt: Date.now() + cacheTtlMs });
           return browserToken;

@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { SESSION_HEALTH, shouldRequireExistingSession, sessionHealthLabel } from '../src/services/session-health-service.js';
 import { protocolLoginCredentialIssue } from '../src/domain/accounts/account-domain.js';
+import { createSessionHealthRunner } from '../src/services/auth/session-health-runner.js';
 
 // Run the production health runner with network/persistence boundaries injected.
-const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-const start = source.indexOf('async function runSessionHealthCheckForAccount(');
-const end = source.indexOf('async function runSessionHealthCheckForAccounts(', start);
 
 function runner({ probe, relogin, overrides = {} }) {
   const bindings = {
@@ -23,7 +20,7 @@ function runner({ probe, relogin, overrides = {} }) {
     isAccountDeactivatedError: () => false,
     ...overrides,
   };
-  return new Function(...Object.keys(bindings), `return (${source.slice(start, end).trim()});`)(...Object.values(bindings));
+  return createSessionHealthRunner(bindings).runSessionHealthCheckForAccount;
 }
 
 test('forced login accepts the fresh Session without any health probe', async () => {

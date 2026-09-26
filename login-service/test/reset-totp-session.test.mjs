@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
 import { withCachedWebSession } from '../src/services/cached-web-session.js';
 import { createMonitorCoordinator } from '../src/services/monitor-coordinator.js';
 import { resolveAccountLoginMethod } from '../src/domain/accounts/account-domain.js';
 import { normalizeTotpSecret, validateTotpSecret } from '../lib/totp.js';
+import { createTotpService } from '../src/services/auth/totp-service.js';
 
-const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-const runnerSource = source.slice(source.indexOf('async function runResetTotpForAccount('), source.indexOf('async function runResetTotpForAccounts('));
 const newSecret = 'KRSXG5DSNFXGOIDB';
 
 test('reset persists the new secret, same Session and updated cookies for a subsequent logout without another login', async () => {
@@ -43,7 +41,7 @@ test('reset persists the new secret, same Session and updated cookies for a subs
         async dispose() { disposed++; }
       },
     };
-    const run = new Function(...Object.keys(bindings), `return (${runnerSource.trim()});`)(...Object.values(bindings));
+    const run = createTotpService(bindings).runResetTotpForAccount;
     const result = await run(account, { proxyPool: 'http://127.0.0.1:17890', directWhenProxyPoolEmpty: true, onAccountDone: item => done.push(item) });
     assert.equal(result.ok, true, result.error);
     assert.equal(account.two_factor_secret, newSecret);
