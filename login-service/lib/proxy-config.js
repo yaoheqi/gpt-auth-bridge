@@ -1,4 +1,4 @@
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { ProxyAgent, Socks5ProxyAgent, fetch as undiciFetch } from 'undici';
 import { createProxyRoute } from './proxy-route.js';
 
 export class ProxyConfigError extends Error {
@@ -125,6 +125,17 @@ export function maskProxyUrl(value = FIXED_LOCAL_PROXY_URL) {
   try { const url = new URL(value); url.username = ''; url.password = ''; return url.href; } catch { return FIXED_LOCAL_PROXY_URL; }
 }
 
+function createProxyDispatcher(proxyUrl) {
+  const url = new URL(proxyUrl);
+  if (url.protocol === 'socks5:' || url.protocol === 'socks5h:') {
+    // Undici sends hostnames to the SOCKS server. Its dedicated agent also
+    // decodes URL credentials correctly, without forwarding HTTP proxy auth.
+    url.protocol = 'socks5:';
+    return new Socks5ProxyAgent(url);
+  }
+  return new ProxyAgent(proxyUrl);
+}
+
 /**
  * Create a fetch function that routes through HTTP(S) or SOCKS proxy.
  * When proxyUrl is empty, returns global fetch.
@@ -147,7 +158,7 @@ export function createProxiedFetch(proxyUrl = '', { isolated: _isolated = false 
   let routePromise;
   let disposed = false;
   try {
-    if (!process.env.PROXY_CHAIN_URL) dispatcher = new ProxyAgent(url);
+    if (!process.env.PROXY_CHAIN_URL) dispatcher = createProxyDispatcher(url);
   } catch (error) {
     if (error instanceof ProxyConfigError) throw error;
     throw new ProxyConfigError(
@@ -162,7 +173,7 @@ export function createProxiedFetch(proxyUrl = '', { isolated: _isolated = false 
       routePromise ||= createProxyRoute(url);
       const route = await routePromise;
       if (disposed) { await route.close(); throw new Error('Proxy fetch disposed'); }
-      dispatcher ||= new ProxyAgent(route.url);
+      dispatcher ||= createProxyDispatcher(route.url);
     }
     return undiciFetch(input, { ...init, dispatcher });
   };
@@ -188,7 +199,7 @@ export async function detectFixedProxyCountryCode({ timeoutMs = 8000, fetchImpl 
     };
     if (proxyUrl) {
       route = await createProxyRoute(proxyUrl);
-      dispatcher = new ProxyAgent(route.url);
+      dispatcher = createProxyDispatcher(route.url);
       init.dispatcher = dispatcher;
     }
     const response = await fetchImpl('https://www.cloudflare.com/cdn-cgi/trace', init);
