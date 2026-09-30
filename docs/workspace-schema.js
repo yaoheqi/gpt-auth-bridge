@@ -6,7 +6,7 @@
     'format', 'skipped', 'health', 'browserAccounts', 'browserSettings', 'cpaSettings',
     'pushRetry', 'pushResults', 'pushOperations', 'activePushOperationId', 'operationHistory',
     'loginLastAccounts', 'loginLastIds', 'loginSessionIds', 'loginPersonalIds', 'loginBusinessIds',
-    'logoutResults', 'logoutLog', 'loginLastResponse', 'loginLastRtKind', 'loginRetry', 'loginProgress',
+    'logoutResults', 'logoutLog', 'loginLastResponse', 'loginLastRtKind', 'loginRetry', 'accountActionRetries', 'loginProgress',
     'loginSub2Loaded', 'loginSub2KeyConfigured', 'loginSub2SelectedGroupIds', 'loginSub2AvailableGroups',
     'loginSub2AvailableProxies', 'loginSub2ProxyId', 'loginProxyMode', 'loginProxyLocalPort', 'loginProxyPool',
     'monitorLastCheckAt', 'monitorRetries', 'monitorEnabled', 'monitorOwner', 'monitorStopped', 'conversionAt',
@@ -14,7 +14,7 @@
   const ARRAY_KEYS = new Set(['skipped', 'health', 'browserAccounts', 'pushResults', 'pushOperations', 'operationHistory',
     'loginLastAccounts', 'loginLastIds', 'loginSessionIds', 'loginPersonalIds', 'loginBusinessIds',
     'logoutResults', 'logoutLog', 'loginProgress', 'loginSub2SelectedGroupIds', 'loginSub2AvailableGroups', 'loginSub2AvailableProxies']);
-  const OBJECT_KEYS = new Set(['browserSettings', 'cpaSettings', 'monitorRetries', 'monitorStopped']);
+  const OBJECT_KEYS = new Set(['browserSettings', 'cpaSettings', 'monitorRetries', 'monitorStopped', 'accountActionRetries']);
   const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   function invalid(message) {
     return Object.assign(new Error(message), { code: 'INVALID_WORKSPACE_SCHEMA' });

@@ -6,7 +6,8 @@ import test from 'node:test';
 import { loadApplicationEnv } from '../src/config.js';
 import { loadCliEnv } from '../login-service/scripts/cli-env.mjs';
 import { parseArgs } from '../login-service/scripts/session-health.mjs';
-import { clampOauthBatchConcurrency, configuredTaskConcurrency } from '../login-service/lib/batch-concurrency.js';
+import { clampOauthBatchConcurrency, configuredTaskConcurrency, configuredBrowserConcurrency } from '../login-service/lib/batch-concurrency.js';
+import { browserReuseLimits, browserReuseEnabled } from '../login-service/lib/browser-worker-pool.js';
 import { resolveProtocolLoginConcurrency } from '../login-service/src/services/job-runner.js';
 
 test('server and CLI share root dotenv precedence for active settings', async () => {
@@ -44,4 +45,18 @@ test('all task concurrency defaults and limits share one policy', () => {
   assert.equal(parseArgs([], { TASK_CONCURRENCY: '25' }).concurrency, 25);
   assert.throws(() => parseArgs(['--concurrency', '30'], {}), /未知参数/);
   assert.throws(() => parseArgs(['--concurrency', '31'], {}));
+});
+
+test('browser settings follow global concurrency and retain bounded reuse limits', () => {
+  for (const [env, expected] of [
+    [{}, 10], [{ TASK_CONCURRENCY: 1 }, 1], [{ TASK_CONCURRENCY: 10, BROWSER_CONCURRENCY: 2 }, 10],
+    [{ TASK_CONCURRENCY: 5, BROWSER_CONCURRENCY: 2, SENTINEL_BROWSER_CONCURRENCY: 1 }, 5],
+    [{ TASK_CONCURRENCY: 3, BROWSER_CONCURRENCY: 99 }, 3], [{ BROWSER_CONCURRENCY: 'invalid' }, 10],
+    [{ TASK_CONCURRENCY: 'invalid' }, 10], [{ TASK_CONCURRENCY: 0 }, 10], [{ TASK_CONCURRENCY: 99 }, 30],
+  ]) assert.equal(configuredBrowserConcurrency(env), expected);
+  assert.equal(browserReuseEnabled({}), false);
+  assert.deepEqual(browserReuseLimits({}), { idleMs: 60000, maxTasks: 20 });
+  assert.deepEqual(browserReuseLimits({ BROWSER_REUSE_IDLE_MS: 2000, BROWSER_REUSE_MAX_TASKS: 3 }), { idleMs: 2000, maxTasks: 3 });
+  assert.deepEqual(browserReuseLimits({ BROWSER_REUSE_IDLE_MS: 999999, BROWSER_REUSE_MAX_TASKS: 999 }), { idleMs: 300000, maxTasks: 100 });
+  assert.deepEqual(browserReuseLimits({ BROWSER_REUSE_IDLE_MS: -1, BROWSER_REUSE_MAX_TASKS: 'invalid' }), { idleMs: 60000, maxTasks: 20 });
 });

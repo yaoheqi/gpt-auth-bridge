@@ -1,4 +1,5 @@
 import { splitPasswordTotpLine } from './login-account-format.js';
+import { validationFailureHint } from './validation-failure.js';
 import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent } from './operation-contract.js';
 
 (async () => {
@@ -58,6 +59,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     // previous run. Keep IDs and public identity only; credentials remain in
     // the encrypted input field/browser account snapshot.
     loginRetry: null,
+    accountActionRetries: {},
     loginProgress: new Map(),
     loginSensitiveValues: [],
     loginRenderFrame: 0,
@@ -226,6 +228,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     exportLoginSessions: document.querySelector("#export-login-sessions"),
     exportLoginPersonal: document.querySelector("#export-login-personal"),
     exportLoginBusiness: document.querySelector("#export-login-business"),
+    copyLoginSuccess: document.querySelector("#copy-login-success"),
+    copyLoginFailed: document.querySelector("#copy-login-failed"),
     pushControls: document.querySelector('#push-controls'),
     pushTarget: document.querySelector('#push-target'),
     pushConverted: document.querySelector('#push-converted'),
@@ -2108,6 +2112,13 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function updateLoginExportActions() {
+    for (const [key, button, label] of [
+      ['selfLeave', elements.selfLeaveWorkspaces, '自踢'],
+      ['logoutAll', elements.protocolLogoutAll, '退出全部会话'],
+    ]) {
+      const count = state.accountActionRetries[key]?.emails?.length || 0;
+      if (button) button.textContent = count ? `${label}：重试失败账号 (${count})` : label;
+    }
     const retryCount = Number(state.loginRetry?.ids?.length || 0);
     elements.startProtocolLogin.textContent = retryCount
       ? `重试失败账号 (${retryCount})`
@@ -2206,6 +2217,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function renderLoginProgress(full = true) {
+    updateLoginCopyActions();
     const records = Array.from(state.loginProgress.values());
     const counts = { waiting: 0, running: 0, success: 0, error: 0 };
     records.forEach((record) => { counts[record.status] = (counts[record.status] || 0) + 1; });
@@ -2507,6 +2519,33 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
 
   function activePushOperation() {
     return state.pushOperations.find(operation => operation.operationId === state.activePushOperationId);
+  }
+
+  function accountActionLines(key, lines) {
+    const retry = state.accountActionRetries[key];
+    if (!retry) return lines;
+    if (JSON.stringify(retry.inputEmails) !== JSON.stringify(loginInputIdentity(lines))) {
+      delete state.accountActionRetries[key];
+      updateLoginExportActions();
+      return lines;
+    }
+    const emails = new Set(retry.emails);
+    return lines.filter(line => emails.has(loginAccountEmail(line).toLowerCase()));
+  }
+
+  function saveAccountActionRetry(key, inputLines, lines, results) {
+    const byEmail = new Map(results.map(row => [String(row.email || '').toLowerCase(), row]));
+    const emails = loginInputIdentity(lines).filter(email => {
+      const row = byEmail.get(email);
+      // An interrupted request is retryable for logout, but a self-leave with
+      // an uncertain outcome requires manual verification before another DELETE.
+      return key === 'selfLeave'
+        ? row && !row.ok && !row.unconfirmed && !row.terminalReason
+        : !row?.ok && !row?.terminalReason;
+    });
+    if (emails.length) state.accountActionRetries[key] = { inputEmails: loginInputIdentity(inputLines), emails };
+    else delete state.accountActionRetries[key];
+    updateLoginExportActions();
   }
 
   function syncPushOperationViews() {
@@ -3081,7 +3120,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
 
   function readLoginProxyMode() {
     const mode = elements.loginProxyMode?.querySelector('input[name="login-proxy-mode"]:checked')?.value;
-    return ["local", "pool", "builtin"].includes(mode) ? mode : "direct";
+    return ["local", "pool"].includes(mode) ? mode : "direct";
   }
 
   function syncLoginProxyControls() {
@@ -3098,9 +3137,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         ? `使用本地代理 127.0.0.1:${elements.loginProxyLocalPort.value || "7890"}，协议登录将按账号固定使用。`
         : pool
         ? (elements.loginProxyPool.value.trim() ? "已配置浏览器代理池，协议登录将按账号固定一个代理。" : "代理池为空，协议登录将直连。")
-        : mode === "builtin"
-          ? "使用服务器内置代理池，协议登录将按账号固定一个代理。"
-          : "当前使用直连。";
+        : "当前使用直连。";
     }
   }
 
@@ -3125,7 +3162,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   function restoreLoginProxySettings() {
     const settings = state.browserSettings?.protocolSettings || {};
     const savedMode = settings.proxyMode ?? state.loginProxyMode;
-    const mode = ["local", "pool", "builtin"].includes(savedMode) ? savedMode : "direct";
+    const mode = ["local", "pool"].includes(savedMode) ? savedMode : "direct";
     const localProxyPort = Math.max(1, Math.min(65535, Math.trunc(Number(settings.localProxyPort ?? state.loginProxyLocalPort) || 7890)));
     const pool = String(state.loginProxyPool || settings.proxyPool || "").trim();
     state.loginProxyMode = mode;
@@ -3246,8 +3283,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (monitorBusy || selfLeaveBusy || protocolLogoutBusy || elements.startProtocolLogin.disabled || elements.resetLoginTotp.disabled) return;
     const isCurrent = workspaceTaskIsCurrent();
     let disabled = [];
+    let inputLines = [], lines = [];
+    const outcomes = new Map();
+    let submitted = false;
     try {
-      const lines = parseLoginAccounts(elements.loginAccounts.value);
+      inputLines = parseLoginAccounts(elements.loginAccounts.value);
+      lines = accountActionLines('selfLeave', inputLines);
       if (!window.confirm(`确认对输入的 ${lines.length} 个账号执行自踢？\n\n将退出这些账号已加入的所有非 owner 团队工作区。退出后会失去对应工作区访问权限，需要重新邀请才能加入。个人空间保留。`)) return;
       selfLeaveBusy = true;
       stopSessionMonitor(true);
@@ -3263,16 +3304,19 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       for (const [index, row] of (imported.rows || []).entries()) {
         const id = row.id || row.account?.id;
         const record = loginProgressRecord({ id, email: row.email || row.account?.email || loginAccountEmail(lines[index]) });
+        if (!row.ok || !id) outcomes.set(record.email.toLowerCase(), { email: record.email, ok: false });
         if (row.ok && id) { ids.push(String(id)); if (record) record.id = String(id); }
         appendLoginProgress(record, row.ok ? '等待自踢队列调度' : row.error || '账号导入失败', { stage: 0, status: row.ok ? 'waiting' : 'error' });
       }
       if (!ids.length) throw new Error('没有可自踢的账号，请检查邮箱、密码和 TOTP 格式');
       setStatus(elements.loginStatus, `正在自踢 ${ids.length} 个账号，并发 ${selectedTaskConcurrency()}…`);
+      submitted = true;
       const result = await loginIcloudStream('/api/v2/accounts/self-leave', { ids, confirmed: true, ...selectedLoginProxyNetwork() }, (name, data) => {
         const record = loginProgressRecord(data);
         if (name === 'account_start') appendLoginProgress(record, '开始核实团队工作区', { stage: 0, status: 'running' });
         if (name === 'account_log') appendLoginProgress(record, data.msg, { stage: 5, status: 'running', level: data.level });
         if (name === 'account_done') {
+          outcomes.set(String(data.email || record?.email || '').toLowerCase(), { ...data, email: data.email || record?.email });
           if (data.unconfirmed) markMonitorStopped(data.id, 'self_leave_pending');
           if (data.terminalReason) markMonitorStopped(data.id, data.terminalReason);
           appendLoginProgress(record, data.error || `已退出 ${data.left || 0} 个工作区，跳过 ${data.skipped || 0}，待确认 ${data.unconfirmed || 0}，失败 ${data.failed || 0}`,
@@ -3282,6 +3326,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       requireCurrentWorkspace(isCurrent);
       const leftIds = new Set();
       for (const row of result.results || []) {
+        outcomes.set(String(row.email).toLowerCase(), row);
         if (row.unconfirmed) markMonitorStopped(row.id, 'self_leave_pending');
         if (row.terminalReason) markMonitorStopped(row.id, row.terminalReason);
         for (const workspace of row.workspaces || []) if (workspace.status === 'left') leftIds.add(workspace.workspaceId);
@@ -3302,7 +3347,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       }
       syncPushOperationViews();
       const failed = Number(result.failed || 0) + Number(imported.failed || 0);
-      setStatus(elements.loginStatus, `自踢完成：已确认退出 ${result.left || 0} 个工作区，${result.unconfirmed || 0} 个待确认，失败账号 ${failed}。${result.unconfirmed ? '待确认账号已暂停测活，请在 ChatGPT 核对后手动登录。' : ''}`, failed || result.unconfirmed ? 'error' : 'ok');
+      saveAccountActionRetry('selfLeave', inputLines, lines, [...outcomes.values()]);
+      setStatus(elements.loginStatus, `自踢完成：已确认退出 ${result.left || 0} 个工作区，${result.unconfirmed || 0} 个待确认，失败账号 ${failed}。${state.accountActionRetries.selfLeave ? '再次点击仅重试失败账号。' : ''}${result.unconfirmed ? '待确认账号已暂停测活，请在 ChatGPT 核对后手动登录。' : ''}`, failed || result.unconfirmed ? 'error' : 'ok');
       await persistBrowserWorkspace(true, true);
     } catch (error) {
       if (isCurrent()) {
@@ -3311,6 +3357,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
           if (record.id) markMonitorStopped(record.id, 'self_leave_pending');
         }
         setStatus(elements.loginStatus, error.message || '自踢失败', 'error');
+        if (selfLeaveBusy) {
+          if (!submitted) for (const email of loginInputIdentity(lines)) outcomes.set(email, { email, ok: false });
+          saveAccountActionRetry('selfLeave', inputLines, lines, [...outcomes.values()]);
+        }
         persistBrowserWorkspace(true);
       }
     } finally {
@@ -3329,9 +3379,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (monitorBusy || selfLeaveBusy || protocolLogoutBusy || elements.startProtocolLogin.disabled || elements.resetLoginTotp.disabled) return;
     const isCurrent = workspaceTaskIsCurrent();
     let disabled = [];
+    let inputLines = [], lines = [];
+    const outcomes = new Map();
     try {
-      const lines = parseLoginAccounts(elements.loginAccounts.value);
-      if (!window.confirm(`确认对输入的 ${lines.length} 个账号退出全部 ChatGPT 会话？\n\n优先使用浏览器缓存的 Session，失效时才使用密码和 TOTP 登录。退出成功后会清理本地认证缓存，并暂停这些账号的自动重登。`)) return;
+      inputLines = parseLoginAccounts(elements.loginAccounts.value);
+      lines = accountActionLines('logoutAll', inputLines);
+      if (!window.confirm(`确认对输入的 ${lines.length} 个账号退出全部 ChatGPT 会话？\n\n优先复用 Session 或 RT 调用 logout_all，均不可用时才使用密码和 TOTP 登录。退出成功后会清理本地认证缓存，并暂停这些账号的自动重登。`)) return;
       protocolLogoutBusy = true;
       stopSessionMonitor(true);
       renderSessionMonitor('定时测活暂停：正在退出全部会话。');
@@ -3347,6 +3400,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         const id = row.id || row.account?.id;
         const record = loginProgressRecord({ id, email: row.email || row.account?.email || loginAccountEmail(lines[index]) });
         if (row.ok && id) { ids.push(String(id)); if (record) record.id = String(id); }
+        if (!row.ok) outcomes.set(record.email.toLowerCase(), { email: record.email, ok: false });
         appendLoginProgress(record, row.ok ? '等待退出会话队列调度' : row.error || '账号导入失败', { stage: 0, status: row.ok ? 'waiting' : 'error' });
       }
       if (!ids.length) throw new Error('没有可退出会话的账号，请检查邮箱、密码和 TOTP 格式');
@@ -3356,6 +3410,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         if (name === 'account_start') appendLoginProgress(record, '优先复用缓存会话，开始退出全部会话', { stage: 0, status: 'running' });
         if (name === 'account_log') appendLoginProgress(record, data.msg, { stage: 4, status: 'running', level: data.level });
         if (name === 'account_done') {
+          outcomes.set(String(data.email || record?.email || '').toLowerCase(), { ...data, email: data.email || record?.email });
           if (data.ok) {
             markMonitorStopped(data.id, 'sessions_logged_out');
             for (const key of ['loginSessionIds', 'loginPersonalIds', 'loginBusinessIds']) state[key] = state[key].filter(id => String(id) !== String(data.id));
@@ -3375,8 +3430,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         }
       });
       requireCurrentWorkspace(isCurrent);
+      for (const row of result.results || []) outcomes.set(String(row.email).toLowerCase(), row);
+      saveAccountActionRetry('logoutAll', inputLines, lines, [...outcomes.values()]);
       const failed = Number(result.failed || 0) + Number(imported.failed || 0);
-      setStatus(elements.loginStatus, `退出全部会话完成：成功 ${result.success || 0}，失败 ${failed}。${failed ? '失败账号可重新点击按钮重试。' : ''}`, failed ? 'error' : 'ok');
+      setStatus(elements.loginStatus, `退出全部会话完成：成功 ${result.success || 0}，失败 ${failed}。${state.accountActionRetries.logoutAll ? '再次点击仅重试失败账号。' : ''}`, failed ? 'error' : 'ok');
       await persistBrowserWorkspace(true, true);
     } catch (error) {
       if (isCurrent()) {
@@ -3384,6 +3441,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
           appendLoginProgress(record, '退出结果未确认，请核对账号会话状态', { status: 'error' });
         }
         setStatus(elements.loginStatus, error.message || '退出全部会话失败', 'error');
+        if (protocolLogoutBusy) saveAccountActionRetry('logoutAll', inputLines, lines, [...outcomes.values()]);
         persistBrowserWorkspace(true);
       }
     } finally {
@@ -3485,7 +3543,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
               : `RT 已就绪：个人 1 个，工作区 ${data.businessSuccess || 0} 个`;
             appendLoginProgress(record, doneText, { stage: workspaceMode === "session" ? 4 : 6, status: "success" });
           } else {
-            appendLoginProgress(record, data.error || "账号处理失败", { status: "error", level: "error" });
+            const hint = validationFailureHint(data);
+            appendLoginProgress(record, hint ? `${hint} [${data.validationFailure.code}]` : (data.error || "账号处理失败"), { status: "error", level: "error" });
           }
         }
       });
@@ -3543,6 +3602,30 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     anchor.click();
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function loginAccountLinesByStatus(status) {
+    return String(elements.loginAccounts.value || "").split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && state.loginProgress.get(loginAccountEmail(line).toLowerCase())?.status === status);
+  }
+
+  function updateLoginCopyActions() {
+    elements.copyLoginSuccess.disabled = !loginAccountLinesByStatus("success").length;
+    elements.copyLoginFailed.disabled = !loginAccountLinesByStatus("error").length;
+  }
+
+  async function copyLoginAccounts(status) {
+    const lines = loginAccountLinesByStatus(status);
+    if (!lines.length) return;
+    const isCurrent = workspaceTaskIsCurrent();
+    const label = status === "success" ? "成功" : "失败";
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      if (isCurrent()) setStatus(elements.loginStatus, `已复制 ${lines.length} 个${label}账号。`, "ok");
+    } catch {
+      if (isCurrent()) setStatus(elements.loginStatus, "复制失败，请允许浏览器访问剪贴板后重试。", "error");
+    }
   }
 
   async function exportLoginSessions() {
@@ -3789,7 +3872,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (files?.length) readFiles(files);
   });
   elements.loginAccounts?.addEventListener("input", () => {
+    updateLoginCopyActions();
     clearLoginRetry();
+    state.accountActionRetries = {};
+    updateLoginExportActions();
     if (!state.loginProgress.size) elements.loginAccountCount.textContent = `${countLoginAccountLines()} 个账号`;
   });
   elements.loginWorkspaceMode?.addEventListener("change", () => {
@@ -3825,6 +3911,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   elements.exportLoginSessions?.addEventListener("click", exportLoginSessions);
   elements.exportLoginPersonal?.addEventListener("click", () => exportLoginSub2api("personal"));
   elements.exportLoginBusiness?.addEventListener("click", () => exportLoginSub2api("business"));
+  elements.copyLoginSuccess?.addEventListener("click", () => copyLoginAccounts("success"));
+  elements.copyLoginFailed?.addEventListener("click", () => copyLoginAccounts("error"));
   elements.importLoginFile?.addEventListener('click', () => elements.loginFileInput.click());
   elements.loginFileInput?.addEventListener('change', event => {
     const files = Array.from(event.target.files || []);

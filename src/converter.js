@@ -21,6 +21,7 @@ const STATIC_FILES = Object.freeze({
   "/operation-contract.js": "operation-contract.js",
   "/app.js": "app.js",
   "/login-account-format.js": "login-account-format.js",
+  "/validation-failure.js": "validation-failure.js",
   "/app.css": "app.css",
 });
 const CONTENT_TYPES = { ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8", ".svg": "image/svg+xml", ".css": "text/css; charset=utf-8" };

@@ -6,21 +6,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import test from 'node:test';
 import { createAuthNetworkPolicy } from '../login-service/src/services/auth/network-policy.js';
 
-test('protocol requests use the built-in pool only when explicitly selected', async () => {
-  let configuredPool = 'builtin.example:3000:user:password';
-  let reads = 0;
-  const { protocolRequestNetwork: network } = createAuthNetworkPolicy({
-    getBuiltInProxyPool: () => { reads++; return configuredPool; },
-  });
+test('protocol requests expose direct, local and custom pool modes', async () => {
+  const { protocolRequestNetwork: network } = createAuthNetworkPolicy();
   assert.equal(network({ browserState: {} }).proxyPool, '');
   assert.equal(network({ proxyMode: 'direct', proxyPool: 'custom.example:3000' }).proxyPool, '');
   assert.equal(network({ proxyMode: 'local', localProxyPort: 8899 }).proxyPool, 'http://127.0.0.1:8899');
   assert.throws(() => network({ proxyMode: 'local', localProxyPort: 70000 }), /端口必须是 1-65535/);
   assert.equal(network({ proxyMode: 'pool', proxyPool: 'custom.example:3000' }).proxyPool, 'custom.example:3000');
-  assert.equal(reads, 0);
-  assert.equal(network({ proxyMode: 'builtin', proxyPool: '' }).proxyPool, configuredPool);
-  configuredPool = '';
-  assert.throws(() => network({ proxyMode: 'builtin' }), /未配置内置代理池/);
+  assert.deepEqual(network({ proxyMode: 'builtin' }), { proxyPool: undefined, directWhenProxyPoolEmpty: false });
 });
 
 test('format toolbar only exposes the conversion format tabs', async () => {
@@ -82,6 +75,7 @@ test('protocol login UI exposes Session and all-workspace RT modes with Sub2 pus
   assert.match(source, /<input type="radio" name="login-workspace-mode" value="all" checked \/>全部工作区 RT/);
   assert.match(source, /id="login-proxy-mode"/);
   assert.match(source, /name="login-proxy-mode" value="local"[^>]*\/>本地代理/);
+  assert.doesNotMatch(source, /内置代理池|value="builtin"/);
   assert.match(source, /id="login-proxy-local-port"/);
   assert.match(source, /id="login-proxy-pool"/);
   assert.match(source, /配置只保存在当前浏览器/);

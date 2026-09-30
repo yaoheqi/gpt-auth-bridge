@@ -972,13 +972,28 @@ label:has(#login-push-sub2-only) { display: none !important; }
 
 .login-workbench-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 6px;
   margin-top: 12px;
 }
 
+.login-workbench-actions .button {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 9px 10px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
 .login-workbench-actions .button-primary {
-  flex: 1 1 280px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .login-workbench-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .login-sub2-grid {

@@ -20,7 +20,7 @@ async function startApp(runtime, overrides = {}) {
   const env = {
     ...process.env, SKIP_DOTENV: '1', NODE_ENV: 'development', CONTAINER: 'false',
     HOST: '127.0.0.1', PORT: String(port), RUNTIME_DIR: runtime,
-    OPENAI_PROXY_URL: '', APP_PROXY_POOL: '', SUB2API_BASE_URL: '', SUB2API_ADMIN_API_KEY: '',
+    OPENAI_PROXY_URL: '', SUB2API_BASE_URL: '', SUB2API_ADMIN_API_KEY: '',
     ...overrides,
   };
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -53,14 +53,15 @@ test('one entrypoint serves the UI, canonical/legacy APIs, SSE and browser-owned
   const runtime = await mkdtemp(path.join(os.tmpdir(), 'unified-app-'));
   let app;
   try {
-    app = await startApp(runtime, { TASK_CONCURRENCY: '3', SENTINEL_BROWSER_CONCURRENCY: '1' });
+    app = await startApp(runtime, { TASK_CONCURRENCY: '3', SENTINEL_BROWSER_CONCURRENCY: '1',
+      BROWSER_CONCURRENCY: '2', BROWSER_REUSE_ENABLED: 'false' });
     const page = await fetch(`${app.url}/`);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /GPTAuthBridge/);
     assert.equal((await fetch(`${app.url}/login`)).status, 404);
     assert.equal((await fetch(`${app.url}/auth.html`)).status, 404);
     assert.equal((await fetch(`${app.url}/portal.css`)).status, 404);
-    for (const asset of ['app.js', 'app.css', 'browser-store.js', 'login-account-format.js']) {
+    for (const asset of ['app.js', 'app.css', 'browser-store.js', 'login-account-format.js', 'validation-failure.js']) {
       assert.equal((await fetch(`${app.url}/${asset}`)).status, 200);
     }
     const metrics = await (await fetch(`${app.url}/api/system/metrics`)).json();
@@ -74,7 +75,13 @@ test('one entrypoint serves the UI, canonical/legacy APIs, SSE and browser-owned
     assert.equal(metrics.workers.leased, 0);
     assert.equal(metrics.tasks.limit, 3);
     assert.equal(metrics.browsers.limit, 3);
-    assert.equal((await (await fetch(`${app.url}/api/system/config`)).json()).taskConcurrency, 3);
+    assert.equal(metrics.browsers.reuseEnabled, false);
+    assert.equal(metrics.browsers.diagnostics.counts.browser_started, 0);
+    assert.equal(metrics.browsers.diagnostics.lastExit, null);
+    const config = await (await fetch(`${app.url}/api/system/config`)).json();
+    assert.equal(config.ok, true);
+    assert.equal(config.taskConcurrency, 3);
+    assert.equal(config.browserConcurrency, 3);
     const alias = await fetch(`${app.url}/yy4399`, { redirect: 'manual' });
     assert.equal(alias.headers.get('location'), '/');
     for (const prefix of ['', '/api/login-icloud']) {

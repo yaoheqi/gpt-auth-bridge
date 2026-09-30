@@ -8,6 +8,15 @@ vm.runInNewContext(readFileSync(new URL('../docs/workspace-schema.js', import.me
 const { serialize, restore } = context.workspaceSchema;
 const plain = value => JSON.parse(JSON.stringify(value));
 
+test('logout and self-leave retry selections survive browser snapshot restore independently', () => {
+  const accountActionRetries = {
+    logoutAll: { inputEmails: ['a@example.com', 'b@example.com'], emails: ['b@example.com'] },
+    selfLeave: { inputEmails: ['a@example.com', 'b@example.com'], emails: ['a@example.com'] },
+  };
+  const restored = restore(serialize({ state: { accountActionRetries } }));
+  assert.deepEqual(plain(restored.state.accountActionRetries), accountActionRetries);
+});
+
 test('durable browser snapshot keeps sources and history, not generated token copies', () => {
   const snapshot = serialize({ state: {
     format: 'sub2api', sessions: [{ value: { accessToken: 'fixture' }, sourceName: 'input.json', path: '$' }],
