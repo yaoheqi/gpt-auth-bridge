@@ -4,7 +4,7 @@ import { createYesCaptchaSolver, YesCaptchaError } from './yescaptcha.js';
  * Resolve OpenAI Sentinel Turnstile token (`t` field).
  * Primary path mirrors grok: YesCaptcha TurnstileTaskProxyless(M1).
  */
-export async function solveOpenAITurnstileToken(settings = {}, logger = null) {
+export async function solveOpenAITurnstileToken(settings = {}, logger = null, { signal, timeoutMs } = {}) {
   const log = typeof logger === 'function' ? logger : () => {};
   const apiKey = String(settings.apiKey || '').trim();
   const websiteUrl = String(settings.websiteUrl || 'https://auth.openai.com').trim();
@@ -28,7 +28,7 @@ export async function solveOpenAITurnstileToken(settings = {}, logger = null) {
   const solver = createYesCaptchaSolver({
     apiKey,
     endpoint,
-    timeoutMs: Number(settings.timeoutMs || 120000) || 120000,
+    timeoutMs: timeoutMs ?? (Number(settings.timeoutMs || 120000) || 120000),
     pollIntervalMs: Number(settings.pollIntervalMs || 3000) || 3000,
   });
 
@@ -37,6 +37,8 @@ export async function solveOpenAITurnstileToken(settings = {}, logger = null) {
     websiteUrl,
     websiteKey,
     premium,
+    signal,
+    timeoutMs,
   });
   log(`YesCaptcha Turnstile 完成，token 长度 ${token.length}`);
   return token;

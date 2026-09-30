@@ -1,3 +1,5 @@
+import { validationFailureFields } from '../../../lib/validation-error.js';
+import { requestSignal } from '../request-scope.js';
 import {
   SESSION_HEALTH as defaultSESSION_HEALTH,
   isAccountDeactivatedError as defaultIsAccountDeactivatedError,
@@ -254,6 +256,8 @@ export function createSessionHealthRunner({
             proxyHealthRegistry.recordSuccess(activeProxyUrl, Date.now() - proxyAttemptStartedAt);
             break;
           } catch (error) {
+            requestSignal()?.throwIfAborted();
+            if (validationFailureFields(error).validationFailure) throw error;
             proxyHealthRegistry.recordFailure(activeProxyUrl, error);
             if (attempt >= maxAttempts || !isRetryableSessionReloginError(error)) throw error;
             switchProxyOnRetry = isRetryableProxyConnectionError(error) && proxyCandidates.length > 1;
@@ -285,6 +289,7 @@ export function createSessionHealthRunner({
           hasSession: true,
         });
       } catch (error) {
+        requestSignal()?.throwIfAborted();
         const message = error instanceof Error ? error.message : String(error);
         if (isAccountDeactivatedError(message)) {
           return finish({
@@ -299,9 +304,11 @@ export function createSessionHealthRunner({
           health: SESSION_HEALTH.RELOGIN_FAILED,
           detail: message,
           error: message,
+          ...validationFailureFields(error),
         });
       }
     } catch (error) {
+      requestSignal()?.throwIfAborted();
       const message = error instanceof Error ? error.message : String(error);
       if (isAccountDeactivatedError(message)) {
         return finish({
@@ -316,6 +323,7 @@ export function createSessionHealthRunner({
         health: SESSION_HEALTH.PROBE_FAILED,
         detail: message,
         error: message,
+        ...validationFailureFields(error),
       });
     }
   }

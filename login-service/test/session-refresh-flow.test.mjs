@@ -3,6 +3,7 @@ import test from 'node:test';
 import { SESSION_HEALTH, shouldRequireExistingSession, sessionHealthLabel } from '../src/services/session-health-service.js';
 import { protocolLoginCredentialIssue } from '../src/domain/accounts/account-domain.js';
 import { createSessionHealthRunner } from '../src/services/auth/session-health-runner.js';
+import { validationError } from '../lib/validation-error.js';
 
 // Run the production health runner with network/persistence boundaries injected.
 
@@ -22,6 +23,22 @@ function runner({ probe, relogin, overrides = {} }) {
   };
   return createSessionHealthRunner(bindings).runSessionHealthCheckForAccount;
 }
+
+test('validation failures keep their metadata and never replay the full login', async () => {
+  for (const code of ['BROWSER_CLOSED', 'VALIDATION_TIMEOUT', 'VALIDATION_CONTEXT_MISMATCH']) {
+    let logins = 0;
+    const run = runner({
+      relogin: async () => { logins++; throw validationError(code, { stage: 'browser_verify', attempt: 2 }); },
+      probe: () => assert.fail('must not probe'),
+      overrides: { getSessionReloginMaxAttempts: () => 3, isRetryableSessionReloginError: () => true,
+        sleep: () => assert.fail('must not retry') },
+    });
+    const result = await run({ id: 'fixture' }, { forceRelogin: true, loginOnly: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.validationFailure.code, code);
+    assert.equal(logins, 1);
+  }
+});
 
 test('forced login accepts the fresh Session without any health probe', async () => {
   let logins = 0;

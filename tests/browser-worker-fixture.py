@@ -29,9 +29,13 @@ class Handler(BaseHTTPRequestHandler):
             body = b'''<!doctype html><script>
               const before = {cookie: document.cookie, storage: localStorage.getItem('account'), agent: navigator.userAgent};
               document.cookie = 'account=fixture; Path=/'; localStorage.setItem('account', 'fixture');
-              window.SentinelSDK = {init() {}, async token() {
+              window.SentinelSDK = {init() {}, async token(flow) {
                 if (navigator.userAgent === 'fixture-hang') await new Promise(() => {});
                 const data = await (await fetch('/token')).json();
+                if (flow) {
+                  data.id = document.cookie.match(/oai-did=([^;]+)/)?.[1];
+                  data.flow = navigator.userAgent === 'fixture-mismatch' ? 'wrong' : flow;
+                }
                 data.p = JSON.stringify(before); return JSON.stringify(data);
               }};
             </script>'''

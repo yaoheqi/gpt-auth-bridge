@@ -36,7 +36,6 @@ import {
   detectFixedProxyCountryCode,
   maskProxyUrl,
   parseProxyPool,
-  resolveConfiguredProxyPool,
   resolveSessionProxy,
 } from './lib/proxy-config.js';
 import { httpWorkerStats, startHttpWorkers, closeHttpWorkers, createCurlCffiFetch } from './lib/curl-cffi-fetch.js';
@@ -486,7 +485,7 @@ const DEFAULT_PROTOCOL_SETTINGS = {
   accountGapMsMin: Math.max(0, Number(process.env.PROTOCOL_ACCOUNT_GAP_MS_MIN || 12000) || 12000),
   accountGapMsMax: Math.max(0, Number(process.env.PROTOCOL_ACCOUNT_GAP_MS_MAX || 35000) || 35000),
   strictEgressMatch: /^(1|true|yes)$/i.test(String(process.env.STRICT_ACCOUNT_EGRESS_MATCH || '').trim()),
-  proxyPool: resolveConfiguredProxyPool(process.env),
+  proxyPool: '',
 };
 
 let protocolSettings = { ...DEFAULT_PROTOCOL_SETTINGS };
@@ -1538,6 +1537,7 @@ app.get('/api/v2/system/proxy-health', requireAdmin, (_req, res) => {
 registerBrowserSessionProbeRoute(app, { requireAdmin, ensureDatabase, findAccountById, getSessionReloginConcurrency, protocolRequestNetwork, accountRequestNetwork, probeSessionThroughConfiguredProxy });
 registerProtocolPipelineRoutes(app, { requireAdmin, ensureDatabase, findAccountById, getSessionReloginConcurrency, protocolRequestNetwork, runSessionHealthCheckForAccount, runAllWorkspaceCodexAuthForAccount, publicAccountView });
 registerProtocolLogoutAllRoutes(app, {
+  updateAccount: (id, patch) => accountRepository.updateById(id, patch),
   requireAdmin, ensureDatabase, findAccountById, getConcurrency: getSessionReloginConcurrency, protocolRequestNetwork,
   clearAuthState: id => clearAuthStateForFreshLogin(id, { status: '全部会话已退出' }),
   persistSession: (id, login) => persistChatGptWebSession(id, login),

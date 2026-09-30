@@ -1,4 +1,5 @@
 import { OPENAI_STAGES as defaultOPENAI_STAGES, inferOpenAiStage as defaultInferOpenAiStage } from '../../../lib/account-stages.js';
+import { validationFailureFields } from '../../../lib/validation-error.js';
 import { agentIdentityRecordFromAccount as defaultAgentIdentityRecordFromAccount, nowIso as defaultNowIso } from './auth-records.js';
 import { buildSub2ApiJson as defaultBuildSub2ApiJson } from '../../../lib/export-sub2api.js';
 import { durationMs as defaultDurationMs, structuredLog as defaultStructuredLog } from '../../../lib/structured-log.js';
@@ -188,6 +189,7 @@ export function createCodexAuthService({
         mode,
         stage: OPENAI_STAGES.FAILED,
         error: message,
+        ...validationFailureFields(error),
         logs,
       });
     } finally {

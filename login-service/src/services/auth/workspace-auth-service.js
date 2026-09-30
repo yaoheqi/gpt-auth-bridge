@@ -1,4 +1,5 @@
 import { nowIso as defaultNowIso } from './auth-records.js';
+import { validationFailureFields } from '../../../lib/validation-error.js';
 import { protocolLoginCredentialIssue as defaultProtocolLoginCredentialIssue } from '../../domain/accounts/account-domain.js';
 import { runAllWorkspaceCodexAuth as defaultRunAllWorkspaceCodexAuth } from '../protocol-login-pipeline.js';
 
@@ -59,7 +60,7 @@ export function createWorkspaceAuthService({
           business_workspace_credentials: existing,
         };
       }).catch(() => {});
-      return { ok: false, skipped: false, id: account.id, email: account.email, workspaceId: target, code: error?.code || '', error: message, preservedPriorCredentials: hasPriorValid, logs };
+      return { ok: false, skipped: false, id: account.id, email: account.email, workspaceId: target, code: error?.code || '', error: message, ...validationFailureFields(error), preservedPriorCredentials: hasPriorValid, logs };
     };
     if (!target) return fail(new Error('Business workspace ID 不能为空'));
     let storageState;

@@ -44,18 +44,24 @@ test('task queue supports nested phases, removes cancelled waits and releases fa
   assert.deepEqual(tasks.stats(), { active: 0, pending: 0, limit: 1 });
 });
 
-test('browser helper uses the same setting and runs ten concurrently without the old cap', async () => {
+test('browser helper follows global concurrency for both five and ten account slots', async () => {
   assert.equal(getBrowserSentinelConcurrency({}), 10);
-  assert.equal(getBrowserSentinelConcurrency({ TASK_CONCURRENCY: '7', SENTINEL_BROWSER_CONCURRENCY: '2' }), 7);
-  const browsers = createBrowserSentinelLimiter(10);
-  let active = 0, peak = 0;
-  await Promise.all(Array.from({ length: 12 }, () => browsers.run(async () => {
-    peak = Math.max(peak, ++active);
-    await delay(1);
-    active--;
-  })));
-  assert.equal(peak, 10);
-  assert.deepEqual(browsers.stats(), { active: 0, pending: 0, limit: 10 });
+  assert.equal(getBrowserSentinelConcurrency({ TASK_CONCURRENCY: '7', BROWSER_CONCURRENCY: '3' }), 7);
+  assert.equal(getBrowserSentinelConcurrency({ TASK_CONCURRENCY: '1', BROWSER_CONCURRENCY: '3' }), 1);
+  for (const concurrency of [5, 10]) {
+    const configured = getBrowserSentinelConcurrency({ TASK_CONCURRENCY: concurrency, BROWSER_CONCURRENCY: 2 });
+    const tasks = createTaskLimiter(concurrency);
+    const browsers = createBrowserSentinelLimiter(configured);
+    let active = 0, peak = 0;
+    await Promise.all(Array.from({ length: 2 * concurrency + 1 }, () => tasks.run(() => browsers.run(async () => {
+      peak = Math.max(peak, ++active);
+      await delay(1);
+      active--;
+    }))));
+    assert.equal(peak, concurrency);
+    assert.deepEqual(browsers.stats(), { active: 0, pending: 0, limit: concurrency });
+    assert.deepEqual(tasks.stats(), { active: 0, pending: 0, limit: concurrency });
+  }
 });
 
 test('both protocol modes use fixed server concurrency and ignore browser overrides', async () => {

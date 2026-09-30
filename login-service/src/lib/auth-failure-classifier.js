@@ -1,4 +1,11 @@
+import { validationFailureFields } from '../../lib/validation-error.js';
+
 export const AUTH_FAILURE_CATEGORIES = Object.freeze({
+  BROWSER_UNAVAILABLE: 'browser_unavailable',
+  VALIDATION_TIMEOUT: 'validation_timeout',
+  VALIDATION_CONTEXT: 'validation_context',
+  VALIDATION_CONFIG: 'validation_config',
+  CANCELLED: 'cancelled',
   ACCOUNT_DEACTIVATED: 'account_deactivated',
   ACCOUNT_ALREADY_EXISTS: 'account_already_exists',
   CAPTCHA_BLOCKED: 'captcha_blocked',
@@ -16,6 +23,14 @@ export const AUTH_FAILURE_CATEGORIES = Object.freeze({
 });
 
 export function classifyAuthFailure(input = '') {
+  const code = validationFailureFields(input).validationFailure?.code;
+  if (code === 'BROWSER_PROXY_FAILED') return AUTH_FAILURE_CATEGORIES.EGRESS_BLOCKED;
+  if (code?.startsWith('BROWSER_')) return AUTH_FAILURE_CATEGORIES.BROWSER_UNAVAILABLE;
+  if (code === 'VALIDATION_TIMEOUT') return AUTH_FAILURE_CATEGORIES.VALIDATION_TIMEOUT;
+  if (code === 'VALIDATION_CONTEXT_MISMATCH') return AUTH_FAILURE_CATEGORIES.VALIDATION_CONTEXT;
+  if (code === 'VALIDATION_CONFIG_MISSING' || code === 'VALIDATION_PROVIDER_FAILED') return AUTH_FAILURE_CATEGORIES.VALIDATION_CONFIG;
+  if (code === 'VALIDATION_CANCELLED' || input?.name === 'AbortError') return AUTH_FAILURE_CATEGORIES.CANCELLED;
+  if (code === 'VALIDATION_CHALLENGE_FAILED') return AUTH_FAILURE_CATEGORIES.CAPTCHA_BLOCKED;
   const message = typeof input === 'string' ? input : String(input?.message || input?.error || input?.code || '');
   const text = message.toLowerCase();
   if (/account[_ -]?deactivated|deactivated|账号已停用|账号停用/.test(text)) return AUTH_FAILURE_CATEGORIES.ACCOUNT_DEACTIVATED;
@@ -36,6 +51,12 @@ export function classifyAuthFailure(input = '') {
 
 export function retryPolicyForFailure(category) {
   switch (category) {
+    case AUTH_FAILURE_CATEGORIES.BROWSER_UNAVAILABLE:
+    case AUTH_FAILURE_CATEGORIES.VALIDATION_TIMEOUT:
+    case AUTH_FAILURE_CATEGORIES.VALIDATION_CONTEXT:
+    case AUTH_FAILURE_CATEGORIES.VALIDATION_CONFIG:
+    case AUTH_FAILURE_CATEGORIES.CANCELLED:
+      return { action: 'pause', retry: false, reason: '验证流程已停止，禁止自动重放密码和 TOTP' };
     case AUTH_FAILURE_CATEGORIES.ACCOUNT_DEACTIVATED:
       return { action: 'delete', retry: false, reason: '账号已停用' };
     case AUTH_FAILURE_CATEGORIES.ACCOUNT_ALREADY_EXISTS:

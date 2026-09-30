@@ -9,11 +9,12 @@ import threading
 import time
 import uuid
 import json
+import sys
 from pathlib import Path
 from contextlib import ExitStack, contextmanager
 from urllib.parse import quote
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 
 DEFAULT_SENTINEL_TIMEOUT = 75
@@ -252,6 +253,18 @@ def _stopped(stop_event) -> bool:
     return bool(stop_event and stop_event.is_set())
 
 
+def is_browser_closed_error(error) -> bool:
+    return isinstance(error, PlaywrightError) and (
+        type(error).__name__ == 'TargetClosedError'
+        or 'Target page, context or browser has been closed' in str(error)
+        or 'Page crashed' in str(error)
+    )
+
+
+class SentinelContextMismatch(RuntimeError):
+    pass
+
+
 def _find_chrome(playwright=None) -> str | None:
     global _CHROME_CACHE
     if _CHROME_CACHE and Path(_CHROME_CACHE).exists():
@@ -356,8 +369,14 @@ def extract_sentinel(
     include_so_token: bool = True,
     browser=None,
     on_timing=None,
+    device_id: str = '',
+    auth_flow: str | None = None,
+    on_event=None,
 ) -> dict | None:
     """Use a short-lived real Chrome context to obtain registration Sentinel tokens."""
+    strict_login = auth_flow is not None
+    if strict_login and (not device_id or auth_flow not in ('authorize_continue', 'password_verify') or keep_browser):
+        raise SentinelContextMismatch('Unsupported login context')
     if keep_browser:
         return SentinelBrowserTransport(
             stop_event=stop_event,
@@ -372,10 +391,15 @@ def extract_sentinel(
             return None
         acquired = _SENTINEL_SEMAPHORE.acquire(timeout=0.1)
     try:
-        deadline = time.time() + max(1, int(deadline_seconds))
+        deadline = time.monotonic() + max(0, float(deadline_seconds))
 
         def remaining_ms(cap: int = 15000) -> int:
-            return max(1000, min(cap, int((deadline - time.time()) * 1000)))
+            if _stopped(stop_event):
+                raise InterruptedError('Browser task cancelled')
+            remaining = (deadline - time.monotonic()) * 1000
+            if remaining <= 0:
+                raise TimeoutError('Browser task deadline exceeded')
+            return max(1, min(cap, int(remaining)))
 
         with ExitStack() as resources:
             if browser is None:
@@ -396,16 +420,23 @@ def extract_sentinel(
             }
             proxy_bridge = None
             context = None
+            cleaning = False
             try:
                 with _timed_stage('browser_context', on_timing):
                     proxy, proxy_bridge = _playwright_proxy(proxy_url)
                     if proxy:
                         context_options["proxy"] = proxy
                     context = browser.new_context(**context_options)
-                page = context.new_page()
-                page.set_default_timeout(remaining_ms())
-                page.set_default_navigation_timeout(remaining_ms())
-                device_id = str(uuid.uuid4())
+                    if on_event:
+                        context.on('close', lambda *_: on_event('context_closed', expected=cleaning))
+                    if strict_login:
+                        context.add_cookies([{'name': 'oai-did', 'value': device_id, 'url': auth_base_url}])
+                    page = context.new_page()
+                    if on_event:
+                        page.on('crash', lambda *_: on_event('page_crashed'))
+                    page.set_default_timeout(remaining_ms())
+                    page.set_default_navigation_timeout(remaining_ms())
+                device_id = device_id or str(uuid.uuid4())
                 state = secrets.token_urlsafe(32)
                 scope = "openid email profile offline_access model.request model.read organization.read organization.write"
                 authorize_url = (
@@ -413,26 +444,23 @@ def extract_sentinel(
                     f"&scope={quote(scope)}&response_type=code"
                     f"&redirect_uri={quote('https://chatgpt.com/api/auth/callback/openai')}"
                     f"&audience={quote('https://api.openai.com/v1')}"
-                    f"&device_id={device_id}&prompt=login&screen_hint=signup&state={state}"
+                    f"&device_id={quote(device_id)}&prompt=login&state={state}"
+                    + ('' if strict_login else '&screen_hint=signup')
                 )
                 with _timed_stage('browser_navigation', on_timing):
                     page.goto(authorize_url, wait_until="domcontentloaded", timeout=remaining_ms(90000))
-                    while time.time() < deadline and not _stopped(stop_event):
+                    while time.monotonic() < deadline and not _stopped(stop_event):
                         try:
                             if page.evaluate("typeof window.SentinelSDK !== 'undefined'"):
                                 break
-                        except Exception:
-                            pass
-                        time.sleep(0.5)
+                        except Exception as error:
+                            if is_browser_closed_error(error):
+                                raise
+                        time.sleep(min(0.5, remaining_ms() / 1000))
                     if _stopped(stop_event):
                         return None
                     if not page.evaluate("typeof window.SentinelSDK !== 'undefined'"):
                         raise TimeoutError("等待 SentinelSDK 超时")
-                try:
-                    page.evaluate("SentinelSDK.init()")
-                except Exception:
-                    pass
-                did = page.evaluate("document.cookie.match(/oai-did=([^;]+)/)?.[1] || ''") or device_id
                 token_js = """
                     ({did, timeoutMs}) => Promise.race([
                         SentinelSDK.token().then(raw => {
@@ -444,6 +472,10 @@ def extract_sentinel(
                         new Promise((_, reject) => setTimeout(() => reject(new Error('Sentinel token timeout')), timeoutMs))
                     ])
                 """
+                login_token_js = """({flow, timeoutMs}) => Promise.race([
+                    SentinelSDK.token(flow),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Sentinel token timeout')), timeoutMs))
+                ])"""
                 so_js = """
                     ({did, timeoutMs}) => Promise.race([
                         SentinelSDK.token().then(raw => {
@@ -454,26 +486,57 @@ def extract_sentinel(
                     ])
                 """
                 with _timed_stage('browser_verify', on_timing):
+                    page.set_default_timeout(remaining_ms())
+                    try:
+                        page.evaluate("SentinelSDK.init()")
+                    except Exception as error:
+                        if strict_login or is_browser_closed_error(error):
+                            raise
+                    did = page.evaluate("document.cookie.match(/oai-did=([^;]+)/)?.[1] || ''") or device_id
+                    if strict_login and did != device_id:
+                        raise SentinelContextMismatch('Browser device changed')
+                    page.set_default_timeout(remaining_ms())
+                    raw = page.evaluate(login_token_js if strict_login else token_js,
+                        {"did": did, "flow": auth_flow, "timeoutMs": remaining_ms(20000)})
+                    if strict_login:
+                        try:
+                            token = json.loads(raw)
+                        except (TypeError, ValueError):
+                            raise SentinelContextMismatch('Invalid SDK result') from None
+                        if (not isinstance(token, dict) or token.get('id') != device_id
+                                or token.get('flow') != auth_flow or not token.get('c')):
+                            raise SentinelContextMismatch('SDK result does not match login context')
                     result = {
-                        "sentinel_token": page.evaluate(token_js, {"did": did, "timeoutMs": remaining_ms(20000)}),
+                        "sentinel_token": raw,
                         "oai_did": did,
                     }
                     # Protocol login consumes only the primary token. Do not wait for
                     # an unrelated registration token or fail an already-ready login.
-                    if include_so_token:
+                    if include_so_token and not strict_login:
                         result["sentinel_so_token"] = page.evaluate(so_js, {"did": did, "timeoutMs": remaining_ms(20000)})
                 cookies = context.cookies()
                 result["cookies"] = cookies
                 result["cookie_str"] = "; ".join(f"{item['name']}={item['value']}" for item in cookies)
                 return result
             finally:
+                cleaning = True
+                failure = sys.exc_info()[1]
                 with _timed_stage('browser_cleanup', on_timing):
                     try:
                         if context is not None:
                             context.close()
+                    except Exception:
+                        if failure is None:
+                            raise
+                        failure.cleanup_code = 'BROWSER_CLEANUP_FAILED'
                     finally:
                         if proxy_bridge is not None:
-                            proxy_bridge.stop()
+                            try:
+                                proxy_bridge.stop()
+                            except Exception:
+                                if failure is None:
+                                    raise
+                                failure.cleanup_code = 'BROWSER_CLEANUP_FAILED'
     finally:
         _SENTINEL_SEMAPHORE.release()
 

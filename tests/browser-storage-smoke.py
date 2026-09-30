@@ -30,7 +30,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="browser-storage-test-") as runtime:
         env = {**os.environ, "SKIP_DOTENV": "1", "NODE_ENV": "development", "CONTAINER": "false",
                "HOST": "127.0.0.1", "PORT": str(port), "RUNTIME_DIR": runtime,
-               "APP_PROXY_POOL": "", "TASK_CONCURRENCY": "10",
+               "TASK_CONCURRENCY": "10",
                "OPENAI_PROXY_URL": "", "SUB2API_BASE_URL": "", "SUB2API_ADMIN_API_KEY": ""}
         child = subprocess.Popen(["node", "server.js"], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:

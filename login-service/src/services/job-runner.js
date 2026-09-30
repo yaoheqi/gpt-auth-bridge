@@ -1,4 +1,5 @@
 import { sanitizeLogMessage } from '../../lib/log-sanitize.js';
+import { validationFailureFields } from '../../lib/validation-error.js';
 import { clampOauthBatchConcurrency, configuredTaskConcurrency } from '../../lib/batch-concurrency.js';
 import { runAccountTask } from '../../lib/task-concurrency.js';
 import { classifyAuthFailure, retryPolicyForFailure } from '../lib/auth-failure-classifier.js';
@@ -135,7 +136,7 @@ export class JobRunner {
           await this.jobs.progress(jobId, { key, email, status: 'skipped', type: manifest.type, phase: 'done', health: result?.health, message: detail || '账号不满足执行条件，已跳过' });
         } else if (result?.ok === false) {
           failed += 1;
-          const failureCategory = classifyAuthFailure(detail || result?.error || result?.detail || '');
+          const failureCategory = classifyAuthFailure({ ...result, message: detail });
           await this.jobs.progress(jobId, {
             key, email, status: 'failed', type: manifest.type, phase: 'done', health: result?.health,
             sessionOk: result?.sessionOk === true,
@@ -145,6 +146,7 @@ export class JobRunner {
             result,
             stage: 'failed',
             failureCategory,
+            ...validationFailureFields(result),
             retryPolicy: retryPolicyForFailure(failureCategory),
             message: detail || '账号操作失败',
           });
@@ -168,7 +170,7 @@ export class JobRunner {
         await liveLogWrites;
         failed += 1;
         const message = sanitizeLogMessage(error instanceof Error ? error.message : String(error));
-        const failureCategory = classifyAuthFailure(message);
+        const failureCategory = classifyAuthFailure(error);
         await this.jobs.progress(jobId, {
           key, email, status: 'failed', type: manifest.type, phase: 'done',
           sessionOk: error?.sessionOk === true,
@@ -177,6 +179,7 @@ export class JobRunner {
           businessErrors: Array.isArray(error?.businessErrors) ? error.businessErrors : [],
           stage: 'failed',
           failureCategory,
+          ...validationFailureFields(error),
           retryPolicy: retryPolicyForFailure(failureCategory),
           message: message || '账号操作失败',
         });

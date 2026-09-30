@@ -1,11 +1,10 @@
-import { parseProxyPool, resolveBuiltInProxyPool } from '../../../lib/proxy-config.js';
+import { parseProxyPool } from '../../../lib/proxy-config.js';
 import { proxyHealthRegistry as defaultProxyHealthRegistry } from '../../../lib/proxy-health.js';
 
 /** Resolve the requested egress once per account. The built-in pool is read
- * only when explicitly selected; request-owned settings default to direct.
+ * request-owned settings default to direct.
  */
 export function createAuthNetworkPolicy({
-  getBuiltInProxyPool = () => resolveBuiltInProxyPool(process.env),
   proxyHealthRegistry = defaultProxyHealthRegistry,
   random = Math.random,
 } = {}) {
@@ -19,12 +18,6 @@ export function createAuthNetworkPolicy({
         throw new Error('本地代理端口必须是 1-65535 的整数');
       }
       return { proxyPool: `http://127.0.0.1:${port}`, directWhenProxyPoolEmpty: true };
-    }
-    if (proxyMode === 'builtin') {
-      const proxyPool = getBuiltInProxyPool();
-      if (!proxyPool) throw new Error('服务器未配置内置代理池，请选择直连或自定义代理池');
-      parseProxyPool(proxyPool);
-      return { proxyPool, directWhenProxyPoolEmpty: true };
     }
     const hasProxyPool = Object.hasOwn(body || {}, 'proxyPool') || Object.hasOwn(body || {}, 'proxy_pool');
     if (proxyMode === 'pool' || hasProxyPool) {

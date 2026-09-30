@@ -1,4 +1,4 @@
-/** Fixed startup concurrency for account tasks, HTTP workers and browser helpers. */
+/** One startup concurrency setting for account tasks, HTTP workers and browsers. */
 
 export const MAX_OAUTH_BATCH_CONCURRENCY = 30;
 export const DEFAULT_OAUTH_BATCH_CONCURRENCY_FALLBACK = 10;
@@ -15,4 +15,8 @@ export function clampOauthBatchConcurrency(value, fallback = DEFAULT_OAUTH_BATCH
 
 export function configuredTaskConcurrency(env = process.env) {
   return clampOauthBatchConcurrency(env.TASK_CONCURRENCY);
+}
+
+export function configuredBrowserConcurrency(env = process.env) {
+  return configuredTaskConcurrency(env);
 }

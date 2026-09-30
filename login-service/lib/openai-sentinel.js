@@ -2,9 +2,12 @@ import { requestMap, requestSignal } from '../src/services/request-scope.js';
 import { randomUUID } from 'crypto';
 import { solveOpenAITurnstileToken } from './openai-turnstile.js';
 import { createSemaphore } from './async-semaphore.js';
-import { configuredTaskConcurrency, MAX_OAUTH_BATCH_CONCURRENCY } from './batch-concurrency.js';
+import { configuredBrowserConcurrency, MAX_OAUTH_BATCH_CONCURRENCY } from './batch-concurrency.js';
 import { setImmediate as yieldToIO } from 'node:timers/promises';
 import { browserWorkerPool } from './browser-worker-pool.js';
+import { validationDeadline } from './validation-deadline.js';
+import { validationError, validationFailureFields } from './validation-error.js';
+import { untilAborted } from './execution-limits.js';
 export { getPythonCandidates } from './browser-worker-pool.js';
 
 const DEFAULT_CACHE_TTL_MS = Math.max(5_000, Number(process.env.SENTINEL_TOKEN_CACHE_TTL_MS || 45_000) || 45_000);
@@ -99,41 +102,48 @@ export function normalizeBrowserUserAgent(userAgent, defaultUserAgent) {
 }
 
 export function getBrowserSentinelConcurrency(env = process.env) {
-  return configuredTaskConcurrency(env);
+  return configuredBrowserConcurrency(env);
 }
 
 export function createBrowserSentinelLimiter(concurrency = getBrowserSentinelConcurrency()) {
-  return createSemaphore(concurrency, { fallback: configuredTaskConcurrency(), max: MAX_OAUTH_BATCH_CONCURRENCY });
+  return createSemaphore(concurrency, { fallback: configuredBrowserConcurrency(), max: MAX_OAUTH_BATCH_CONCURRENCY });
 }
 
 export const browserSentinelStats = () => browserWorkerPool.stats();
 
 export async function solveTurnstileViaBrowserSentinel(deviceID, flow, {
   proxyUrl = '', userAgent = '', repoRoot, defaultUserAgent, authBaseUrl = 'https://auth.openai.com',
+  signal = requestSignal(), timeoutMs = 75000, pool = browserWorkerPool,
 } = {}) {
+  if (!deviceID || !['authorize_continue', 'password_verify'].includes(flow)) {
+    throw validationError('VALIDATION_CONTEXT_MISMATCH', { stage: 'browser_context' });
+  }
+  const budget = validationDeadline({ signal, timeoutMs, stage: 'browser_queue' });
   try {
-    const parsed = await browserWorkerPool.run({
+    const parsed = await pool.run({
       proxyUrl: String(proxyUrl || '').trim(),
       userAgent: normalizeBrowserUserAgent(userAgent, defaultUserAgent),
       authBaseUrl: String(authBaseUrl || 'https://auth.openai.com').trim(),
-      deadlineSeconds: 75,
-    }, { root: repoRoot, signal: requestSignal() });
+      deviceID, flow,
+      deadlineSeconds: budget.remaining() / 1000,
+    }, { root: repoRoot, signal: budget.signal, remainingMs: () => budget.remaining() });
+    budget.remaining();
     const raw = String(parsed.sentinel_token || '').trim();
-    if (!raw) throw new Error('浏览器 Sentinel 未返回 token');
-    const token = JSON.parse(raw);
-    return JSON.stringify({
-      p: token.p || null, t: token.t || null, c: token.c || null,
-      id: deviceID || token.id || parsed.oai_did || '',
-      flow: flow || token.flow || 'authorize_continue',
-    });
+    let token;
+    try { token = JSON.parse(raw); } catch { throw validationError('BROWSER_PROTOCOL_ERROR', { stage: 'browser_verify' }); }
+    if (!token || typeof token !== 'object' || !token.c || token.id !== deviceID || token.flow !== flow || parsed.oai_did !== deviceID) {
+      throw validationError('VALIDATION_CONTEXT_MISMATCH', { stage: 'browser_verify' });
+    }
+    return raw; // Preserve the SDK result; never relabel another device or flow.
   } catch (error) {
-    if (requestSignal()?.aborted) throw requestSignal().reason;
-    throw new Error(`浏览器 Sentinel 回退失败: ${browserFailureSummary(error.message || String(error))}`);
-  }
+    budget.signal.throwIfAborted();
+    if (validationFailureFields(error).validationFailure) throw error;
+    throw validationError('VALIDATION_CHALLENGE_FAILED', { stage: 'browser_verify' }, error);
+  } finally { budget.close(); }
 }
 
-function cacheKey(deviceID, flow, proxyUrl) {
-  return `${String(deviceID || '')}|${String(flow || '')}|${String(proxyUrl || '')}`;
+function cacheKey(deviceID, flow, proxyUrl, fingerprint) {
+  return JSON.stringify([deviceID, flow, proxyUrl, fingerprint]);
 }
 
 export function browserFailureSummary(value) {
@@ -152,87 +162,123 @@ export function createOpenAISentinelTokenFetcher({
   defaultUserAgent,
   repoRoot,
   cacheTtlMs = DEFAULT_CACHE_TTL_MS,
+  solveBrowserSentinel = solveTurnstileViaBrowserSentinel,
+  solveProvider = solveOpenAITurnstileToken,
 } = {}) {
   return async function fetchOpenAISentinelToken(fetcher, deviceID, flow, {
     fingerprint = defaultFingerprint,
     proxyUrl = '',
+    signal = requestSignal(), timeoutMs = 120000,
   } = {}) {
-    const key = cacheKey(deviceID, flow, proxyUrl);
-    const cached = sentinelTokenCache.get(key);
-    if (cached && cached.expiresAt > Date.now() && cached.token) {
-      return cached.token;
-    }
+    const budget = validationDeadline({ signal, timeoutMs });
+    let stage = 'requirements';
+    try {
+      const fp = fingerprint || defaultFingerprint;
+      const key = cacheKey(deviceID, flow, proxyUrl, fp);
+      const cached = sentinelTokenCache.get(key);
+      if (cached && cached.expiresAt > Date.now() && cached.token) {
+        return cached.token;
+      }
 
-    if (typeof ensureYesCaptchaSettings === 'function') {
-      await ensureYesCaptchaSettings();
-    }
-    const fp = fingerprint || defaultFingerprint;
-    const requirementSeed = `${Math.random()}`;
-    const reqToken = `gAAAAAC${await generateSentinelAnswer(requirementSeed, '0', fp, defaultUserAgent)}`;
-    const response = await fetcher('https://sentinel.openai.com/backend-api/sentinel/req', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'user-agent': fp?.userAgent || defaultUserAgent,
-        origin: 'https://sentinel.openai.com',
-        referer: 'https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6',
-      },
-      body: JSON.stringify({
-        p: reqToken,
+      if (typeof ensureYesCaptchaSettings === 'function') {
+        await untilAborted(Promise.resolve().then(() => ensureYesCaptchaSettings()), budget.signal);
+      }
+      const requirementSeed = `${Math.random()}`;
+      const reqToken = `gAAAAAC${await generateSentinelAnswer(requirementSeed, '0', fp, defaultUserAgent, { signal: budget.signal })}`;
+      budget.remaining();
+      const response = await untilAborted(fetcher('https://sentinel.openai.com/backend-api/sentinel/req', {
+        method: 'POST',
+        signal: budget.signal,
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': fp?.userAgent || defaultUserAgent,
+          origin: 'https://sentinel.openai.com',
+          referer: 'https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6',
+        },
+        body: JSON.stringify({
+          p: reqToken,
+          id: deviceID,
+          flow,
+        }),
+      }), budget.signal);
+      if (!response.ok) {
+        await response.body?.cancel?.().catch(() => {});
+        throw validationError('VALIDATION_CHALLENGE_FAILED', { stage: 'requirements' });
+      }
+      const requirements = await untilAborted(response.json(), budget.signal);
+      if (!requirements || typeof requirements !== 'object' || Array.isArray(requirements)) {
+        throw validationError('VALIDATION_CHALLENGE_FAILED', { stage });
+      }
+      stage = 'sentinel';
+      let turnstileToken = null;
+      if (requirements.turnstile?.dx) {
+        const settings = typeof getYesCaptchaSettings === 'function' ? getYesCaptchaSettings() : {};
+        const errors = [];
+        let failure;
+        if (settings.apiKey && settings.websiteKey) {
+          try {
+            // Reserve half the remaining budget for the configured browser fallback.
+            const providerBudget = validationDeadline({ signal: budget.signal, stage: 'provider',
+              timeoutMs: Math.min(Number(settings.timeoutMs) || 120000, budget.remaining() / (settings.browserFallback ? 2 : 1)) });
+            try {
+              turnstileToken = await untilAborted(solveProvider(settings, null, {
+                signal: providerBudget.signal, timeoutMs: providerBudget.remaining(),
+              }), providerBudget.signal);
+            } finally { providerBudget.close(); }
+          } catch (error) {
+            budget.signal.throwIfAborted();
+            failure = validationFailureFields(error).validationFailure ? error : validationError('VALIDATION_PROVIDER_FAILED', { stage: 'provider' }, error);
+            errors.push(failure.message);
+          }
+        } else {
+          errors.push('YesCaptcha 未完整配置（需要 API Key + Turnstile sitekey）');
+        }
+        if (!turnstileToken && settings.browserFallback) {
+          try {
+            const browserToken = await solveBrowserSentinel(deviceID, flow, {
+              proxyUrl,
+              userAgent: fp?.userAgent || defaultUserAgent,
+              repoRoot,
+              defaultUserAgent,
+              authBaseUrl: settings.websiteUrl || 'https://auth.openai.com',
+              signal: budget.signal, timeoutMs: budget.remaining(),
+            });
+            budget.remaining();
+            sentinelTokenCache.set(key, { token: browserToken, expiresAt: Date.now() + cacheTtlMs });
+            return browserToken;
+          } catch (error) {
+            budget.signal.throwIfAborted();
+            failure = validationFailureFields(error).validationFailure ? error : validationError('VALIDATION_CHALLENGE_FAILED', { stage: 'browser_verify' }, error);
+            errors.unshift(failure.message);
+          }
+        }
+        if (!turnstileToken) {
+          const error = failure || validationError('VALIDATION_CONFIG_MISSING', { stage: 'sentinel' });
+          error.message = `OpenAI 登录触发 Turnstile，自动求解失败：${errors.join(' | ')}。${settings.browserFallback
+              ? '浏览器 Sentinel 回退已启用但执行失败，请检查浏览器运行环境及退出原因；也可配置 YESCAPTCHA_API_KEY / OPENAI_TURNSTILE_SITEKEY 作为备用通道'
+              : '请启用浏览器 Sentinel 回退，或配置 YESCAPTCHA_API_KEY / OPENAI_TURNSTILE_SITEKEY'}`;
+          throw error;
+        }
+      }
+      const proof = requirements.proofofwork?.required && requirements.proofofwork.seed && requirements.proofofwork.difficulty
+        ? `gAAAAAB${await generateSentinelAnswer(requirements.proofofwork.seed, requirements.proofofwork.difficulty, fp, defaultUserAgent, { signal: budget.signal })}`
+        : null;
+      const token = JSON.stringify({
+        p: proof,
+        t: turnstileToken,
+        c: requirements.token,
         id: deviceID,
         flow,
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`请求 sentinel requirements 失败: ${response.status} body=${await response.text()}`);
+      });
+      budget.remaining();
+      sentinelTokenCache.set(key, { token, expiresAt: Date.now() + cacheTtlMs });
+      return token;
+    } catch (error) {
+      budget.signal.throwIfAborted();
+      if (validationFailureFields(error).validationFailure) throw error;
+      throw validationError('VALIDATION_CHALLENGE_FAILED', { stage }, error);
     }
-    const requirements = await response.json();
-    let turnstileToken = null;
-    if (requirements.turnstile?.dx) {
-      const settings = typeof getYesCaptchaSettings === 'function' ? getYesCaptchaSettings() : {};
-      const errors = [];
-      if (settings.apiKey && settings.websiteKey) {
-        try {
-          turnstileToken = await solveOpenAITurnstileToken(settings);
-        } catch (error) {
-          errors.push(error instanceof Error ? error.message : String(error));
-        }
-      } else {
-        errors.push('YesCaptcha 未完整配置（需要 API Key + Turnstile sitekey）');
-      }
-      if (!turnstileToken && settings.browserFallback) {
-        try {
-          const browserToken = await solveTurnstileViaBrowserSentinel(deviceID, flow, {
-            proxyUrl,
-            userAgent: fp?.userAgent || defaultUserAgent,
-            repoRoot,
-            defaultUserAgent,
-            authBaseUrl: settings.websiteUrl || 'https://auth.openai.com',
-          });
-          sentinelTokenCache.set(key, { token: browserToken, expiresAt: Date.now() + cacheTtlMs });
-          return browserToken;
-        } catch (error) {
-          errors.unshift(`浏览器回退失败: ${browserFailureSummary(error instanceof Error ? error.message : String(error))}`);
-        }
-      }
-      if (!turnstileToken) {
-        throw new Error(
-          `OpenAI 登录触发 Turnstile，自动求解失败：${errors.join(' | ')}。请参考 grok 项目配置 YESCAPTCHA_API_KEY / OPENAI_TURNSTILE_SITEKEY，或启用浏览器 Sentinel 回退`,
-        );
-      }
-    }
-    const proof = requirements.proofofwork?.required && requirements.proofofwork.seed && requirements.proofofwork.difficulty
-      ? `gAAAAAB${await generateSentinelAnswer(requirements.proofofwork.seed, requirements.proofofwork.difficulty, fp, defaultUserAgent)}`
-      : null;
-    const token = JSON.stringify({
-      p: proof,
-      t: turnstileToken,
-      c: requirements.token,
-      id: deviceID,
-      flow,
-    });
-    sentinelTokenCache.set(key, { token, expiresAt: Date.now() + cacheTtlMs });
-    return token;
+    finally { budget.close(); }
   };
 }
 

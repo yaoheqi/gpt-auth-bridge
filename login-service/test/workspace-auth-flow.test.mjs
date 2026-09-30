@@ -14,6 +14,7 @@ import { hasTotpSecret, generateTotpCode, validateTotpSecret } from '../lib/totp
 import { withCachedWebSession, sessionApiError } from '../src/services/cached-web-session.js';
 import { readLogoutAllResponse } from '../src/services/logout-all-response.js';
 import { randomUUID } from 'node:crypto';
+import { validationError } from '../lib/validation-error.js';
 import { createOpenAIJsonAuthFlow } from '../src/services/auth/openai-json-auth-flow.js';
 
 // Import the same class factory the application composes. External boundaries
@@ -54,6 +55,16 @@ function flowWithTransport(transport = async url => response(url)) {
   flow.fetch = makeFetchCookie(transport, flow.jar);
   return flow;
 }
+
+test('MFA does not submit a code after validation context failure', async () => {
+  const flow = flowWithTransport(async (url, options) => {
+    assert.notEqual(options.method, 'POST');
+    return response(url);
+  });
+  flow.fetchSentinelToken = async () => { throw validationError('VALIDATION_CONTEXT_MISMATCH'); };
+  await assert.rejects(flow.mfaValidate({ continueUrl: '/mfa-challenge/fixture',
+    payload: { page: { payload: { factor_id: 'fixture' } } } }), { code: 'VALIDATION_CONTEXT_MISMATCH' });
+});
 
 test('Web and Codex login use password and TOTP', async () => {
   for (const phase of ['chatgpt', 'codex']) {

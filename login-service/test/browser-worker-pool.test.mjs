@@ -73,6 +73,27 @@ test('browser reuse preserves process but isolates cookies, storage, proxy and u
       assert.ok(firstCold.sentinel_token);
       assert.equal(coldPool.workers.size, 0);
     } finally { await coldPool.close(); }
+    const strictPool = new BrowserWorkerPool({ size: 1, reuse: true });
+    try {
+      const payload = { authBaseUrl: `http://127.0.0.1:${ports.direct}`,
+        deviceID: 'fixture-device', flow: 'password_verify' };
+      const strict = await strictPool.run(payload);
+      assert.equal(JSON.parse(strict.sentinel_token).id, payload.deviceID);
+      assert.equal(JSON.parse(strict.sentinel_token).flow, payload.flow);
+      assert.deepEqual(Object.keys(strict).sort(), ['oai_did', 'sentinel_token']);
+      await assert.rejects(strictPool.run({ ...payload, userAgent: 'fixture-mismatch' }), error => {
+        assert.equal(error.code, 'VALIDATION_CONTEXT_MISMATCH');
+        assert.equal(error.stage, 'browser_verify');
+        assert.equal(error.retryable, false);
+        return true;
+      });
+      assert.equal(strictPool.workers.size, 0, 'context mismatch must retire the process');
+      const metrics = strictPool.stats().diagnostics;
+      assert.equal(metrics.counts.browser_started, 1);
+      assert.equal(metrics.counts.context_closed, 2);
+      assert.equal(metrics.retirements.failed, 1);
+      assert.equal(metrics.counts.worker_exit, 1);
+    } finally { await strictPool.close(); }
     const startingPool = new BrowserWorkerPool({ size: 1, reuse: true });
     const starting = assert.rejects(startingPool.run({ authBaseUrl: `http://127.0.0.1:${ports.direct}` }), { name: 'AbortError' });
     while (!startingPool.workers.size) await Promise.resolve();

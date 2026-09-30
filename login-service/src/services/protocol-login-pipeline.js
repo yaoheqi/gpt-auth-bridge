@@ -3,6 +3,8 @@ import { protocolLoginCredentialIssue } from '../domain/accounts/account-domain.
 import { withAccountTimings, measureStage } from '../../lib/stage-timing.js';
 import { accountQueueDuration } from '../../lib/task-concurrency.js';
 import { terminalLoginFailure } from './monitor-coordinator.js';
+import { validationFailureFields } from '../../lib/validation-error.js';
+import { requestSignal } from './request-scope.js';
 
 // Old clients may still submit personal; it now includes all workspaces.
 export function normalizeProtocolPipelineMode(value) {
@@ -36,7 +38,7 @@ async function executeProtocolLogin(account, {
       result = {
         ok: Boolean(session.ok), phase: session.ok ? 'done' : 'protocol',
         sessionOk: Boolean(session.ok), personalOk: false, businessSuccess: 0, businessErrors: [],
-        ...(!session.ok ? { error: session.error || session.detail || '协议登录失败' } : {}),
+        ...(!session.ok ? { error: session.error || session.detail || '协议登录失败', ...validationFailureFields(session) } : {}),
       };
     } else {
       result = await runAllWorkspaces(account, {
@@ -45,7 +47,8 @@ async function executeProtocolLogin(account, {
       });
     }
   } catch (error) {
-    result = { ok: false, phase, sessionOk: false, personalOk: false, businessSuccess: 0, businessErrors: [], error: error.message || String(error) };
+    requestSignal()?.throwIfAborted();
+    result = { ok: false, phase, sessionOk: false, personalOk: false, businessSuccess: 0, businessErrors: [], error: error.message || String(error), ...validationFailureFields(error) };
   }
   result = { ...result, ...identity, ...(!result.ok && terminalLoginFailure(result.error) ? { terminalReason: terminalLoginFailure(result.error) } : {}) };
   return result;
@@ -82,6 +85,8 @@ export async function runAllWorkspaceCodexAuth({
         await persistBusiness(record, workspaceId);
         result.businessSuccess += 1;
       } catch (error) {
+        requestSignal()?.throwIfAborted();
+        if (validationFailureFields(error).validationFailure) throw error;
         const message = `工作区 ${workspaceId}: ${error.message || String(error)}`;
         result.businessErrors.push(message);
         flow.log(message, 'error');
@@ -92,7 +97,9 @@ export async function runAllWorkspaceCodexAuth({
     result.phase = 'done';
     if (!result.ok) result.error = result.businessErrors.join('；');
   } catch (error) {
+    requestSignal()?.throwIfAborted();
     result.error = error.message || String(error);
+    Object.assign(result, validationFailureFields(error));
   } finally {
     await flow.dispose();
   }

@@ -1,3 +1,5 @@
+import { validationFailureFields } from '../../lib/validation-error.js';
+
 const DEFAULT_STATUSES = {
   TASK_QUEUE_FULL: 429,
   REQUEST_CAPACITY_FULL: 429,
@@ -26,6 +28,7 @@ export function operationErrorPayload(error, {
   const retryAfterMs = Number(error?.retryAfterMs);
   return {
     ok: false, code, message, status,
+    ...validationFailureFields(error),
     error: errorShape === 'object' ? { code, message } : message,
     ...(error?.retryAfterMs != null && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 ? { retryAfterMs } : {}),
     ...(requestId ? { requestId } : {}),

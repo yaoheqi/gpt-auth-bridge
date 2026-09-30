@@ -230,7 +230,7 @@ export function createLoginChallengeMethods({
       }
 
       this.log(`提交 TOTP 2FA 验证码 (factor=${factorId.slice(0, 8)}…)`);
-      const sentinelToken = await this.fetchSentinelToken('authorize_continue').catch(() => '');
+      const sentinelToken = await this.fetchSentinelToken('authorize_continue');
       const code = generateTotpCode(this.account.two_factor_secret);
       const headers = this.browserHeaders({
         accept: 'application/json',
