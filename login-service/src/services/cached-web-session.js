@@ -44,7 +44,7 @@ export function needsSessionReauthentication(error) {
 // Use the requested operation itself to validate a cached token; no redundant
 // health probe before logout/MFA. Persist fresh sessions before a later failure.
 export async function withCachedWebSession(account, {
-  flow, persistSession = async () => {},
+  flow, persistSession = async () => {}, fallbackSession,
 }, operation) {
   let storedSession = {};
   try { storedSession = JSON.parse(account.session_json || '{}'); } catch {}
@@ -77,6 +77,18 @@ export async function withCachedWebSession(account, {
     await persistSession(result);
     return result;
   };
+  let fallbackAttempted = false;
+  const fallback = async () => {
+    if (fallbackAttempted || !fallbackSession) return null;
+    fallbackAttempted = true;
+    const result = await fallbackSession();
+    if (result?.accessToken) assertSessionIdentity(account, result.accessToken, result.session);
+    return result?.accessToken ? result : null;
+  };
+  if (!session) {
+    session = await fallback();
+    if (session) reused = true;
+  }
   if (!session) {
     session = await login(false);
     reused = flow.reuseStoredSession;
@@ -85,6 +97,13 @@ export async function withCachedWebSession(account, {
   catch (error) {
     // Never restart a partially completed MFA mutation with the old TOTP.
     if (!reused || error.authMutationStarted || !needsSessionReauthentication(error)) throw error;
+    const alternative = await fallback();
+    if (alternative) {
+      try { return { result: await operation(alternative.accessToken, { reused: true }), session: alternative, reused: true }; }
+      catch (fallbackError) {
+        if (fallbackError.authMutationStarted || !needsSessionReauthentication(fallbackError)) throw fallbackError;
+      }
+    }
     flow.log('缓存 Session 失效或操作要求重新认证，使用密码和 TOTP 登录一次', 'warn');
     session = await login(true);
     return { result: await operation(session.accessToken, { reused: false }), session, reused: false };

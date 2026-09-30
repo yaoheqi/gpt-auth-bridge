@@ -4,10 +4,11 @@ import { normalizeAccountIds } from '../../services/account-selection.js';
 import { monitorCoordinator, terminalLoginFailure } from '../../services/monitor-coordinator.js';
 import { wantsEventStream, runSseResponse } from '../batch/sse-runner.js';
 import { withCachedWebSession } from '../../services/cached-web-session.js';
+import { refreshSessionForLogout } from '../../services/logout-refresh-session.js';
 import { sendOperationError } from '../../http/operation-error.js';
 
 export function registerProtocolLogoutAllRoutes(app, {
-  requireAdmin, ensureDatabase, findAccountById, getConcurrency, protocolRequestNetwork, createFlow, clearAuthState, persistSession,
+  requireAdmin, ensureDatabase, findAccountById, getConcurrency, protocolRequestNetwork, createFlow, clearAuthState, persistSession, updateAccount,
 }) {
   const terminalErrorMessage = {
     account_unavailable: '账号已删除、停用或不存在，已停止重试',
@@ -34,6 +35,7 @@ export function registerProtocolLogoutAllRoutes(app, {
               try {
                 const { result: logout, reused } = await withCachedWebSession(account, {
                   flow, persistSession: login => persistSession(account.id, login),
+                  fallbackSession: () => refreshSessionForLogout(account, { flow, persistAuth: patch => updateAccount(account.id, patch) }),
                 }, token => flow.logoutAllChatGptSessions(token));
                 await clearAuthState(account.id);
                 monitorCoordinator.record(account, 'sessions_logged_out');

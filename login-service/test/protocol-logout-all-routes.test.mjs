@@ -38,6 +38,7 @@ async function startRoute(t, f, { stream = false } = {}) {
     getConcurrency: () => 10,
     protocolRequestNetwork: body => ({ proxyPool: body.proxyPool || '' }),
     persistSession: async () => f.calls.push('persist-session'),
+    updateAccount: async (_id, patch) => { f.calls.push('persist-rt'); Object.assign(f.account, patch); },
     clearAuthState: async () => f.calls.push('clear-auth'),
     createFlow: (_account, network, onLog) => {
       assert.equal(network.proxyPool, 'fixture-proxy');
@@ -157,4 +158,66 @@ test('protocol logout-all cannot overlap another operation for the same account'
     assert.equal(result.failed, 1);
     assert.match(result.results[0].error, /正在执行/);
   });
+});
+
+test('logout reuses RT without password login, including after cached Session rejection', async t => {
+  for (const staleSession of [false, true]) {
+    const f = fixture();
+    f.account.openai_rt = 'old-private-rt';
+    if (staleSession) f.account.session_access_token = 'expired-session';
+    f.flow.fetch = async (url, init) => {
+      assert.equal(url, 'https://auth.openai.com/oauth/token');
+      assert.equal(new URLSearchParams(init.body).get('grant_type'), 'refresh_token');
+      assert.equal(new URLSearchParams(init.body).get('refresh_token'), 'old-private-rt');
+      f.calls.push('refresh');
+      return Response.json({ access_token: 'fixture-session-private', refresh_token: 'rotated-private-rt' });
+    };
+    const logout = f.flow.logoutAllChatGptSessions;
+    f.flow.logoutAllChatGptSessions = async token => {
+      if (token === 'expired-session') throw Object.assign(new Error('expired'), { status: 401 });
+      return logout(token);
+    };
+    const result = await (await startRoute(t, f)).json();
+    assert.equal(result.success, 1);
+    assert.deepEqual(f.calls, ['refresh', 'persist-rt', 'logout', 'clear-auth']);
+    assert.equal(f.account.openai_rt, 'rotated-private-rt');
+    assert.doesNotMatch(JSON.stringify(result), /private-rt|fixture-session-private/);
+  }
+});
+
+test('logout keeps rotated business RT on failure and does not login on rate limits', async t => {
+  const f = fixture();
+  f.account.business_openai_rt = 'business-old-rt';
+  f.account.business_workspace_credentials = [{ workspaceId: 'team', refreshToken: 'business-old-rt' }];
+  f.flow.fetch = async () => Response.json({ access_token: 'fixture-session-private', refresh_token: 'business-new-rt' });
+  f.flow.logoutAllChatGptSessions = async () => { throw Object.assign(new Error('rate limited'), { status: 429 }); };
+  const result = await (await startRoute(t, f)).json();
+  assert.equal(result.failed, 1);
+  assert.deepEqual(f.calls, ['persist-rt']);
+  assert.equal(f.account.business_openai_rt, 'business-new-rt');
+  assert.equal(f.account.business_workspace_credentials[0].refreshToken, 'business-new-rt');
+});
+
+test('RT refresh failures preserve credentials; only explicit invalid grants allow login', async t => {
+  for (const [status, error, login] of [[400, 'invalid_grant', true], [429, 'rate_limited', false], [503, 'unavailable', false]]) {
+    const f = fixture();
+    f.account.openai_rt = 'keep-private-rt';
+    f.flow.fetch = async () => Response.json({ error }, { status });
+    const result = await (await startRoute(t, f)).json();
+    assert.equal(result.results[0].ok, login);
+    assert.equal(f.calls.includes('login'), login);
+    assert.equal(f.calls.includes('clear-auth'), login);
+    assert.equal(f.account.openai_rt, 'keep-private-rt');
+  }
+});
+
+test('RT with a different account identity never logs out or overwrites credentials', async t => {
+  const f = fixture();
+  f.account.openai_rt = 'keep-private-rt';
+  const token = 'e30.' + Buffer.from(JSON.stringify({ email: 'someone-else@example.com' })).toString('base64url') + '.fixture';
+  f.flow.fetch = async () => Response.json({ access_token: token, refresh_token: 'wrong-private-rt' });
+  const result = await (await startRoute(t, f)).json();
+  assert.equal(result.failed, 1);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.account.openai_rt, 'keep-private-rt');
 });
