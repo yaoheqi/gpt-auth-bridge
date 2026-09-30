@@ -9,7 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from curl_cffi import requests
+from curl_cffi import requests, CurlOpt
 from urllib.parse import urlsplit
 import os
 
@@ -18,7 +18,13 @@ def create_session():
     # A worker is leased by one account at a time. Recreate the curl-cffi
     # session on lease release so cookies and connection state never cross
     # account boundaries.
-    return requests.Session(impersonate="chrome")
+    # Some SOCKS providers reject IPv6 targets with plaintext HTTP errors,
+    # which otherwise surface as misleading TLS WRONG_VERSION_NUMBER errors.
+    family = str(os.environ.get("CURL_CFFI_IP_FAMILY", "")).strip()
+    if family not in ("", "4", "6"):
+        raise ValueError("CURL_CFFI_IP_FAMILY must be empty, 4 or 6")
+    options = {CurlOpt.IPRESOLVE: {"4": 1, "6": 2}[family]} if family else {}
+    return requests.Session(impersonate="chrome", curl_options=options)
 
 
 def emit(value: dict) -> None:

@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  resolveBuiltInProxyPool,
-  resolveConfiguredProxyPool,
   FIXED_LOCAL_PROXY_URL,
   createProxiedFetch,
   isInitialAuthEgressBlock,
@@ -13,16 +11,10 @@ import {
   resolveSessionProxy,
 } from './proxy-config.js';
 
-test('a configured built-in pool remains opt-in and default egress is direct', () => {
+test('environment proxy pools never become implicit egress', () => {
   const env = { OPENAI_BUILT_IN_PROXY_POOL: 'proxy.example:3000:fixture-user:fixture-password' };
-  assert.equal(resolveConfiguredProxyPool(env), '');
   assert.equal(resolveSessionProxy({ env }).mode, 'direct');
-  assert.equal(resolveSessionProxy({ env: {} }).mode, 'direct');
-  const selected = resolveSessionProxy({ env, pool: resolveBuiltInProxyPool(env) });
-  assert.equal(selected.mode, 'pool');
-  assert.equal(selected.proxyUrl, 'http://fixture-user:fixture-password@proxy.example:3000/');
-  assert.equal(resolveBuiltInProxyPool({}), '');
-  assert.equal(resolveBuiltInProxyPool({ OPENAI_BUILT_IN_PROXY_POOL: 'proxy.example:3000:PROXY_USER_PLACEHOLDER:PROXY_PASSWORD_PLACEHOLDER' }), '');
+  assert.equal(resolveSessionProxy({ env, pool: 'proxy.example:3000:fixture-user:fixture-password' }).mode, 'pool');
 });
 
 test('resolveSessionProxy selects from configured pool', () => {
@@ -33,6 +25,19 @@ test('resolveSessionProxy selects from configured pool', () => {
     mode: 'pool',
     label: 'http://remote.example:8080/',
   });
+});
+
+test('removed environment pools never supply an implicit proxy', () => {
+  const env = {
+    APP_PROXY_POOL: 'socks5://legacy.example:1080',
+    PROXY_POOL: 'http://alias.example:8080',
+    OPENAI_BUILT_IN_PROXY_POOL: 'socks5://builtin.example:1080',
+  };
+  assert.equal(resolveSessionProxy({ env }).mode, 'direct');
+  assert.equal(resolveSessionProxy({ env, pool: '' }).mode, 'direct');
+  assert.equal(resolveSessionProxy({ env, pool: 'socks5://custom.example:1080' }).proxyUrl, 'socks5://custom.example:1080');
+  assert.equal(resolveSessionProxy({ env, pool: 'socks5://builtin.example:1080' }).proxyUrl, 'socks5://builtin.example:1080');
+  assert.equal(resolveSessionProxy({ env: { ...env, OPENAI_PROXY_URL: 'http://fixed.example:8080' } }).mode, 'local');
 });
 
 test('request-scoped empty proxy pool can explicitly select direct egress', () => {

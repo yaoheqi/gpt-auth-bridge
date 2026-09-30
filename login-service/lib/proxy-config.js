@@ -13,7 +13,6 @@ export class ProxyConfigError extends Error {
 // These are live bindings because server.js loads its local .env after ESM
 // imports have been evaluated.
 const DEFAULT_FIXED_LOCAL_PROXY_URL = '';
-const DEFAULT_BUILT_IN_PROXY_POOL = '';
 
 function envHas(env, key) {
   return Object.prototype.hasOwnProperty.call(env || {}, key);
@@ -25,53 +24,29 @@ function resolveFixedLocalProxy(env = process.env) {
     : DEFAULT_FIXED_LOCAL_PROXY_URL;
 }
 
-export function resolveBuiltInProxyPool(env = process.env) {
-  const configured = env?.OPENAI_BUILT_IN_PROXY_POOL;
-  const pool = configured === undefined ? DEFAULT_BUILT_IN_PROXY_POOL : String(configured || '').trim();
-  return containsPlaceholder(pool) ? '' : pool;
-}
-
 export let FIXED_LOCAL_PROXY_URL = resolveFixedLocalProxy(process.env);
-export let BUILT_IN_PROXY_POOL = resolveBuiltInProxyPool(process.env);
 
 /** Refresh values after the caller has loaded a dotenv file. */
 export function configureProxyEnvironment(env = process.env) {
   FIXED_LOCAL_PROXY_URL = resolveFixedLocalProxy(env);
-  BUILT_IN_PROXY_POOL = resolveBuiltInProxyPool(env);
-  return { fixedProxyUrl: FIXED_LOCAL_PROXY_URL, builtInProxyPool: BUILT_IN_PROXY_POOL };
-}
-
-function containsPlaceholder(value) {
-  return /(?:PROXY_USER_PLACEHOLDER|PROXY_PASSWORD_PLACEHOLDER)/i.test(String(value || ''));
-}
-
-function resolveDefaultPool(env) {
-  const explicitPool = env?.APP_PROXY_POOL ?? env?.PROXY_POOL;
-  if (explicitPool !== undefined) return String(explicitPool || '').trim();
-  // The built-in pool is opt-in per request, never a default network route.
-  return '';
-}
-
-export function resolveConfiguredProxyPool(env = process.env) {
-  return resolveDefaultPool(env);
+  return { fixedProxyUrl: FIXED_LOCAL_PROXY_URL };
 }
 
 export function normalizeProxyUrl(value) {
   let text = String(value || '').trim().replace(/^['"]|['"]$/g, '');
   if (!text) return '';
   if (!text.includes('://')) {
-    const parts = text.split(':');
-    if (parts.length === 4 && !text.includes('@')) {
-      const [host, port, username, password] = parts;
+    const hostPortCredentials = text.match(/^([^:@]+):(\d+):([^:]+):(.+)$/);
+    const hostPortAtCredentials = text.match(/^([^:@]+):(\d+)@([^:]+):(.+)$/);
+    if (hostPortCredentials) {
+      const [, host, port, username, password] = hostPortCredentials;
       text = `http://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${host}:${port}`;
-    } else if (text.includes('@')) {
-      const [left, right] = text.split('@', 2);
-      if (/^[^:]+:\d+$/.test(left) && right.includes(':')) {
-        const [username, password] = right.split(':', 2);
-        text = `http://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${left}`;
-      } else text = `http://${text}`;
+    } else if (hostPortAtCredentials) {
+      const [, host, port, username, password] = hostPortAtCredentials;
+      text = `http://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${host}:${port}`;
+    } else {
+      text = `http://${text}`;
     }
-    else text = `http://${text}`;
   }
   const parsed = new URL(text);
   const hasExplicitPort = /:\d+(?:\/)?$/.test(text);
@@ -99,10 +74,9 @@ function refreshRotatingProxySession(proxyUrl, { stickyMinutes = 30 } = {}) {
 }
 
 export function resolveSessionProxy({ pool, env = process.env, directWhenEmpty = false, refreshSession = true } = {}) {
-  const configuredPool = pool !== undefined && pool !== null
-    ? pool
-    : resolveDefaultPool(env);
-  const candidates = parseProxyPool(configuredPool);
+  // Pools are explicit: the caller supplies either the selected server pool
+  // or the browser's custom pool. No environment pool is an implicit fallback.
+  const candidates = parseProxyPool(pool);
   const fixedProxyUrl = env === process.env ? FIXED_LOCAL_PROXY_URL : resolveFixedLocalProxy(env);
   const fallbackProxyUrl = directWhenEmpty ? '' : FIXED_LOCAL_PROXY_URL;
   const effectiveFallbackProxyUrl = env === process.env ? fallbackProxyUrl : (directWhenEmpty ? '' : fixedProxyUrl);

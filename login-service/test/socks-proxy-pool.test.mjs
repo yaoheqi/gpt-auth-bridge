@@ -60,7 +60,7 @@ async function socksFixture() {
   } };
 }
 
-for (const mode of ['builtin', 'pool']) {
+for (const mode of ['pool']) {
   for (const scheme of ['socks5', 'socks5h']) {
     test(`${mode} pool connects using authenticated ${scheme} and preserves session credentials`, { timeout: 10000 }, async () => {
       const fixture = await socksFixture();
@@ -69,7 +69,7 @@ for (const mode of ['builtin', 'pool']) {
         const username = 'fixture-region-US-sid-example-t-10';
         const password = 'test:p@ss%word';
         const proxy = `${scheme}://${username}:${encodeURIComponent(password)}@127.0.0.1:${fixture.port}`;
-        const policy = createAuthNetworkPolicy({ getBuiltInProxyPool: () => proxy });
+        const policy = createAuthNetworkPolicy();
         const network = policy.protocolRequestNetwork({ proxyMode: mode, ...(mode === 'pool' ? { proxyPool: `\n${proxy}\n` } : {}) });
         const accountNetwork = policy.accountRequestNetwork({}, network);
         const selected = resolveSessionProxy({ pool: accountNetwork.proxyPool });

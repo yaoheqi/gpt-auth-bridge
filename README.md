@@ -22,9 +22,9 @@ npm start
 
 - `HOST` 默认 `127.0.0.1`，`PORT` 默认 `4173`。
 - `PYTHON` 可指定 Python 路径；默认查找根目录 `.venv`、旧 `login-service/.venv` 和系统 PATH。
-- 默认直连，不会隐式使用本机 `127.0.0.1:7890`。服务器级任务仍可显式设置 `OPENAI_PROXY_URL`、`APP_PROXY_POOL` 或 `PROXY_CHAIN_URL`。
-- 协议登录页面统一提供“直连”“本地代理”“内置代理池”和“自定义代理池”四种模式；本地代理端口、代理池和模式都保存在当前浏览器，并随请求发送。本地代理默认使用 `127.0.0.1:7890`，可在页面修改端口，因此本地运行和服务器部署使用同一套配置。`OPENAI_BUILT_IN_PROXY_POOL` 仅在页面主动选择内置代理池时使用，代理凭据不下发给浏览器。
-- 内置和自定义代理池均支持 `socks5://用户名:密码@主机:端口`、`socks5h://` 和 HTTP(S) 地址，可混合使用，每行一个或用分号分隔。用户名、密码中的 `@`、`:`、`%` 等特殊字符需要 URL 编码。内置池在服务器 `.env` 的 `OPENAI_BUILT_IN_PROXY_POOL` 中配置（多行值需加引号）；自定义池直接粘贴到页面的代理池输入框。
+- 默认直连，不会隐式使用本机 `127.0.0.1:7890`。服务器级任务仍可显式设置固定代理 `OPENAI_PROXY_URL` 或前置代理 `PROXY_CHAIN_URL`。不再提供单独的服务器内置代理池，也不读取旧的 `APP_PROXY_POOL` / `PROXY_POOL` 环境变量。
+- 协议登录页面统一提供“直连”“本地代理”和“自定义代理池”三种模式；本地代理端口、代理池和模式都保存在当前浏览器，并随请求发送。本地代理默认使用 `127.0.0.1:7890`，可在页面修改端口。
+- 自定义代理池支持 `hostname:port:username:password`、`socks5://username:password@host:port`、`username:password@hostname:port` 和 `hostname:port@username:password`，可混合使用，每行一个或用分号分隔。用户名、密码中的 `@`、`:`、`%` 等特殊字符需要 URL 编码。
 
 ## 浏览器保存数据
 
@@ -46,19 +46,23 @@ npm start
 
 所有任务并发统一由根目录 `.env` 的 **`TASK_CONCURRENCY=10`** 设置（范围 1–30，修改后重启）。协议登录、2FA 重设、测活、退出会话和账号批处理使用同一个全局任务队列；多个请求、浏览器同时操作也不会叠加突破上限。页面只展示服务端配置，旧浏览器设置和 API 请求中的并发值不会覆盖它。Sub2API 的“导出账号并发/每账号并发”是导出 JSON 中各账号的 `concurrency`，默认 **50**，可在页面修改；已有浏览器保存的设置仍生效。此值与本工具执行并发无关。
 
-HTTP worker 数量和 Chromium 辅助验证并发也使用 `TASK_CONCURRENCY`。默认启动并预热 **10 个 Python HTTP worker**，固定保留 10 个，退出的空闲 worker 自动补起；不再动态扩缩容。超过容量的操作排队，断开后取消等待；账号交接前清理 Session，同账号的工作区仍顺序授权。浏览器辅助最多同时运行 **10 个**，仅在需要人机验证时启动。限流和网络错误保留原有的重试、退避处理，不再改变并发数。
+HTTP worker 数量和 Chromium 辅助验证并发均使用 `TASK_CONCURRENCY`（范围 1–30）。全局设置为 10 时，两者上限均为 10；设置为 5 时均为 5，不再单独配置浏览器并发。默认启动并预热 **10 个 Python HTTP worker**，固定保留 10 个，退出的空闲 worker 自动补起。Chromium 仅在需要辅助验证时启动，超过容量排队，断开后取消等待；浏览器验证属于已占用的账号任务，不会额外增加账号任务并发。账号交接前清理 Session，同账号的工作区仍顺序授权。
 
 设执行并发为 N，需要处理数据的 API 请求最多 `max(16, 4×N)` 个（健康检查、指标等轻量查询除外），超出容量在解析请求体前返回 429。账号及执行池的等待队列设有上限 `max(32, 4×N)`，排队最长 90 秒；单账号执行最长 15 分钟（不含排队），资源回收预算为 5 秒。这些边界保留统一执行并发，不引入新的页面并发参数。新测活会取消旧测活；取消在途 HTTP 时终止 Python，确认进程退出后才复用容量。未能确认退出的 worker 会隔离容量，避免新旧进程叠加。任务超时不能证明远端写操作未生效。
 
 协议登录的浏览器辅助只获取登录所需的一个验证结果，不再额外等待注册流程结果；Chromium 路径查找复用已启动的 Playwright 驱动。验证计算分段让出事件循环，避免阻塞其他账号请求、进度日志和取消操作。
 
-实验性的 `BROWSER_REUSE_ENABLED=true` 可复用 Python、Playwright 和 Chromium 进程，默认 `false`。每次辅助验证仍新建并关闭独立浏览器 Context，Cookie、本地存储、代理和 User-Agent 按任务隔离。池按需启动，上限同为 `TASK_CONCURRENCY`；空闲 60 秒、完成 20 次任务或发生异常、取消、超时后回收进程。开关修改后需重启。默认关闭时，每次任务结束都会回收进程。测试使用本地模拟页面验证隔离、代理切换及冷暖启动耗时，不代表真实上游登录速度或成功率。
+实验性的 `BROWSER_REUSE_ENABLED=true` 可复用 Python、Playwright 和 Chromium 进程，默认 `false`。每次辅助验证仍新建并关闭独立浏览器 Context，Cookie、本地存储、代理和 User-Agent 按任务隔离。池按需启动，上限为 `TASK_CONCURRENCY`。`BROWSER_REUSE_IDLE_MS=60000`（范围 1000–300000）控制空闲回收，`BROWSER_REUSE_MAX_TASKS=20`（范围 1–100）控制使用次数；异常、取消、超时也会触发回收。配置修改后需重启，非法值回退默认值，超出最大值按最大值处理。默认关闭时，每次任务结束都会回收进程。测试使用本地模拟页面验证隔离、代理切换及冷暖启动耗时，不代表真实上游登录速度或成功率。
+
+辅助验证共用 120 秒预算，包括 requirements 请求、第三方验证、浏览器排队与恢复。配置浏览器回退时，第三方验证最多使用剩余预算的一半，给回退保留时间。浏览器意外关闭最多重建一次；取消、超时、上下文不匹配不会触发整段密码/TOTP 重放。资源回收仍有独立的 5 秒预算，未确认进程退出前不释放其容量。
+
+登录浏览器接收当前 device ID 和 flow，SDK 结果必须与之完全一致，缺失或不匹配返回 `VALIDATION_CONTEXT_MISMATCH`；不再把注册流程结果改写成登录结果。此契约已用本地 SDK fixture 验证，真实上游兼容性仍需验证；不接受通过改写字段绕过不匹配。账号 JSON/SSE 的 `validationFailure` 仅保留错误码、阶段、尝试次数和清理错误码，前端按码提示。`/api/system/metrics.browsers.diagnostics` 汇总启动、断连、页面崩溃、恢复和回收原因，并记录最近一次 Python Worker 退出码/信号（不是 Chrome 的退出码）；不保存账号、URL、Cookie、令牌或原始 stderr，重启后清零。
 
 `/api/system/config` 返回服务端固定并发；`/api/system/metrics` 的 `tasks`、`browsers` 展示任务和辅助浏览器的上限、占用与排队，`workers` 展示固定 HTTP worker 数量和租约情况，`requests` 展示请求容量、占用和拒绝次数。
 
 `/api/system/metrics.stageTimings` 按固定阶段汇总排队、代理预检、HTTP 请求、密码/TOTP、工作区授权和浏览器启动/导航/验证等耗时。次数、失败数、取消数、平均值和最大值自进程启动累计；P50/P95 仅统计各阶段最近 512 次样本。每个账号的进度卡片提供“阶段耗时”，对应流水线响应的 `timings` 和 SSE 的 `account_timing` 事件。账号执行总耗时不含排队；父阶段包含子阶段，同一阶段多次调用累计，各项不能直接相加。全局统计不记录账号、代理地址或凭据，重启后清零。
 
-旧 `SENTINEL_BROWSER_CONCURRENCY`、`OAUTH_CONCURRENCY`、`OAUTH_BATCH_CONCURRENCY`、`ALIVE_CHECK_THREADS`、`SESSION_RELOGIN_THREADS` 和 `CURL_CFFI_*POOL_SIZE`/`CURL_CFFI_WORKERS` 均不再控制并发，可从已有 `.env` 删除。CLI 不再接受 `--concurrency`，统一读取配置文件。容器默认 `APP_PIDS_LIMIT=2048`，为 Chromium 的进程和线程留出空间；CPU 和内存分别由 `APP_CPU_LIMIT`、`APP_MEMORY_LIMIT` 控制，默认上限为 4 核、6 GiB；临时目录上限为 512 MiB。实际资源需求取决于浏览器页面和代理延迟，提高并发时应同时调整资源限制。
+旧 `BROWSER_CONCURRENCY`、`SENTINEL_BROWSER_CONCURRENCY`、`OAUTH_CONCURRENCY`、`OAUTH_BATCH_CONCURRENCY`、`ALIVE_CHECK_THREADS`、`SESSION_RELOGIN_THREADS` 和 `CURL_CFFI_*POOL_SIZE`/`CURL_CFFI_WORKERS` 均不再控制并发，可从已有 `.env` 删除。CLI 不再接受 `--concurrency`，统一读取配置文件。容器默认 `APP_PIDS_LIMIT=2048`，为 Chromium 的进程和线程留出空间；CPU 和内存分别由 `APP_CPU_LIMIT`、`APP_MEMORY_LIMIT` 控制，默认上限为 4 核、6 GiB；临时目录上限为 512 MiB。实际资源需求取决于浏览器页面和代理延迟，提高并发时应同时调整资源限制。
 
 服务器后台任务已停用；推送在当前请求内完成，失败时在浏览器保留结果供重试。`.env` 仅保留服务运营配置，不写入用户提交的数据。旧 SQLite 和 settings.json 不会被加载。
 
