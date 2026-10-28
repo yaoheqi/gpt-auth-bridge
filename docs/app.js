@@ -3942,6 +3942,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   const modelEvaluation = initializeModelEvaluation({
     request: pageFetch, isWorkspaceCurrent: workspaceTaskIsCurrent, getHeaders: loginProxyHeaders,
     getEligibility: () => evaluationEligibility,
+    getConcurrency: () => taskConcurrency,
     onImport: text => {
       const sources = parseInputDocuments(text);
       const valid = sources.filter(item => { try { convertSession(item.value); return true; } catch { return false; } });
@@ -4434,6 +4435,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const config = await response.json();
     if (!Number.isInteger(config.taskConcurrency) || config.taskConcurrency < 1) throw new Error('并发配置无效');
     taskConcurrency = config.taskConcurrency;
+    modelEvaluation.refresh();
     elements.taskConcurrencyValue.textContent = String(taskConcurrency);
   } catch {
     elements.taskConcurrencyValue.textContent = '按服务端设置';

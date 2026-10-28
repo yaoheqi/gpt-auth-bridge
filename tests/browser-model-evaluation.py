@@ -66,7 +66,7 @@ def main():
     url = f'http://127.0.0.1:{port}'
     with tempfile.TemporaryDirectory(prefix='model-evaluation-test-') as runtime:
         env = {**os.environ, 'SKIP_DOTENV': '1', 'NODE_ENV': 'development', 'CONTAINER': 'false',
-               'HOST': '127.0.0.1', 'PORT': str(port), 'RUNTIME_DIR': runtime, 'TASK_CONCURRENCY': '2', 'OPENAI_PROXY_URL': ''}
+               'HOST': '127.0.0.1', 'PORT': str(port), 'RUNTIME_DIR': runtime, 'TASK_CONCURRENCY': '10', 'OPENAI_PROXY_URL': ''}
         child = subprocess.Popen(['node', 'server.js'], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
             for _ in range(300):
@@ -118,6 +118,15 @@ def main():
                 expect(page.locator('#health-status')).to_contain_text('测活完成')
                 page.locator('#model-evaluation-tab').click()
                 expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 3 个导入账号')
+                expect(page.locator('#evaluation-include-pelican')).not_to_be_checked()
+                expect(page.locator('#evaluation-concurrency')).to_have_text('服务端并发：10')
+                start.click()
+                expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
+                assert len(requests) == 2
+                assert all(body['question'] == 'candy' for body in requests)
+                expect(page.locator('#evaluation-case-title')).to_have_text('糖果题')
+                requests.clear()
+                page.locator('#evaluation-include-pelican').check()
                 start.click()
                 expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
                 assert len(requests) == 4
@@ -218,6 +227,35 @@ def main():
                 page.locator('#evaluation-import-submit').click()
                 expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 3 个导入账号')
                 expect(panel).to_be_visible()
+                expect(page.locator('#evaluation-include-pelican')).not_to_be_checked()
+                page.unroute('**/api/session-health')
+                page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200}] * 12}))
+                page.locator('#evaluation-import').click()
+                batch = [{'accessToken': 'fixture-token', 'user': {'email': f'batch-{i}@example.com'}} for i in range(12)]
+                page.locator('#evaluation-import-text').fill(json.dumps(batch))
+                page.locator('#evaluation-import-submit').click()
+                expect(page.locator('#evaluation-account-count')).to_have_text('12 个可测试账号 / 12 个导入账号')
+                pending = []
+                page.route('**/api/model-evaluation', lambda route: pending.append(route))
+                start.click()
+                for _ in range(100):
+                    if len(pending) >= 10:
+                        break
+                    page.wait_for_timeout(50)
+                assert len(pending) == 10, len(pending)
+                page.wait_for_timeout(200)
+                assert len(pending) == 10
+                assert all(route.request.post_data_json['question'] == 'candy' for route in pending)
+                pending[0].fulfill(content_type='text/event-stream', body='data: ' + json.dumps({'type': 'complete', 'status': 'passed', 'output': '答案：21', 'durationMs': 1}) + '\n\n')
+                for _ in range(100):
+                    if len(pending) >= 11:
+                        break
+                    page.wait_for_timeout(50)
+                assert len(pending) == 11
+                panel.locator('[data-evaluation-stop]').click()
+                expect(page.locator('#evaluation-status')).to_contain_text('已停止')
+                for route in pending[1:]:
+                    route.abort()
                 assert not errors, errors
                 browser.close()
                 print('PASS: inline paste/file import, healthy-only filtering, Markdown/raw and injection protection, result switcher, first-screen preview, CSS/SMIL pause/resume, stream pause persistence, API modes, cancellation and key privacy')

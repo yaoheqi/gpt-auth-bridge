@@ -130,7 +130,7 @@
                 </div>
                 <label for="evaluation-model">测试模型<input id="evaluation-model" list="evaluation-models" value="gpt-6-astra" maxlength="100" required spellcheck="false" /></label>
                 <datalist id="evaluation-models"><option value="gpt-6-astra"></option><option value="gpt-5.6-sol"></option><option value="gpt-5.6-terra"></option><option value="gpt-5.5"></option></datalist>
-                <div class="evaluation-question-summary"><span>本轮测试</span><strong>糖果题 <small>推理 / 答案 21</small></strong><strong>鹈鹕骑自行车 <small>SVG / 动画</small></strong></div>
+                <div class="evaluation-question-summary"><span>本轮测试</span><strong>糖果题 <small>默认必测 / 答案 21</small></strong><label class="evaluation-optional-question"><input id="evaluation-include-pelican" type="checkbox" data-private="true" />同时测试鹈鹕题 <small>SVG / 动画</small></label><small id="evaluation-concurrency">并发按服务端配置</small></div>
                 <button class="button button-primary" type="submit" data-evaluation-start disabled>开始测试</button>
               </fieldset>
               <button class="button button-secondary evaluation-stop" type="button" data-evaluation-stop disabled>停止测试</button>

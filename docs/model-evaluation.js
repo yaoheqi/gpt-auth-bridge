@@ -6,7 +6,7 @@ const STATUS = { queued: '排队中', connecting: '连接模型', waiting: '等�
 const ACTIVE = ['queued', 'connecting', 'waiting', 'generating'];
 const seconds = ms => ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`;
 
-export function initializeModelEvaluation({ request, getEligibility, getHeaders, isWorkspaceCurrent, onImport }) {
+export function initializeModelEvaluation({ request, getEligibility, getHeaders, isWorkspaceCurrent, onImport, getConcurrency }) {
   const panel = document.querySelector('#model-evaluation');
   if (!panel) return { reset() {}, refresh() {} };
   const find = id => panel.querySelector(`#evaluation-${id}`);
@@ -44,6 +44,9 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     start.disabled = Boolean(controller) || (!apiMode && !eligibility.accounts.length);
     fields.disabled = Boolean(controller);
     stop.disabled = !controller;
+    const concurrency = getConcurrency();
+    find('concurrency').textContent = Number.isInteger(concurrency) ? `服务端并发：${concurrency}` : '正在加载服务端并发配置';
+    if (!Number.isInteger(concurrency) || concurrency < 1) start.disabled = true;
   }
 
   function chooseView(view) {
@@ -208,6 +211,9 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
 
   find('form').addEventListener('submit', async event => {
     event.preventDefault(); if (controller) return;
+    const concurrency = getConcurrency();
+    if (!Number.isInteger(concurrency) || concurrency < 1) { status.textContent = '服务端并发配置尚未加载，请刷新页面后重试。'; return; }
+    const questions = find('include-pelican').checked ? ['candy', 'pelican'] : ['candy'];
     const chosenModel = model.value.trim();
     if (!/^[a-zA-Z0-9._-]{1,100}$/.test(chosenModel)) { status.textContent = '请选择或输入有效模型名称。'; return; }
     const apiMode = mode() === 'api';
@@ -222,7 +228,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     const run = ++generation, ownsWorkspace = isWorkspaceCurrent();
     const active = () => run === generation && ownsWorkspace() && !current.signal.aborted;
     results.replaceChildren(); clearTimeout(previewTimer);
-    jobs = accounts.flatMap((account, index) => Object.keys(TITLES).map(question => {
+    jobs = accounts.flatMap((account, index) => questions.map(question => {
       const label = apiMode ? new URL(api.baseUrl).host : account.email || `账号 ${index + 1}`;
       const button = document.createElement('button'); button.type = 'button'; button.className = 'evaluation-task';
       const title = document.createElement('strong'); title.textContent = TITLES[question];
@@ -237,12 +243,12 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
       job.option = document.createElement('option'); job.option.value = String(index); find('task-select').append(job.option);
     });
     find('queue-count').textContent = `${jobs.length} 项`;
-    selectJob(1); jobs.forEach(updateJob); refresh();
-    status.textContent = `正在测试 ${accounts.length} 个${apiMode ? 'API 接入' : '测活通过的账号'}，每次并行执行 2 题。`;
+    selectJob(questions.includes('pelican') ? 1 : 0); jobs.forEach(updateJob); refresh();
+    status.textContent = `正在测试 ${accounts.length} 个${apiMode ? 'API 接入' : '测活通过的账号'}，服务端配置并发 ${concurrency}。`;
     timer = setInterval(renderMetrics, 500);
     let cursor = 0;
     try {
-      await Promise.all(Array.from({ length: Math.min(2, jobs.length) }, async () => {
+      await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
         while (cursor < jobs.length && active()) {
           const job = jobs[cursor++]; job.status = 'connecting'; job.startedAt = Date.now(); updateJob(job);
           let complete = false;
