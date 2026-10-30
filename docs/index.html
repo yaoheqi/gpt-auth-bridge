@@ -297,13 +297,13 @@
           <aside class="login-steps" aria-label="协议登录步骤">
             <strong>执行步骤</strong>
             <ol class="login-step-list" id="login-step-list">
-              <li class="login-step" data-login-stage="0"><span class="login-step-marker">1</span><span class="login-step-label">打开官网</span></li>
+              <li class="login-step" data-login-stage="0"><span class="login-step-marker">1</span><span class="login-step-label">连接 Codex</span></li>
               <li class="login-step" data-login-stage="1"><span class="login-step-marker">2</span><span class="login-step-label">输入账号</span></li>
-              <li class="login-step" data-login-stage="2"><span class="login-step-marker">3</span><span class="login-step-label">输入密码</span></li>
-              <li class="login-step" data-login-stage="3"><span class="login-step-marker">4</span><span class="login-step-label">输入 2FA</span></li>
-              <li class="login-step" data-login-stage="4"><span class="login-step-marker">5</span><span class="login-step-label">登录成功</span></li>
+              <li class="login-step" data-login-stage="2"><span class="login-step-marker">3</span><span class="login-step-label">验证密码</span></li>
+              <li class="login-step" data-login-stage="3"><span class="login-step-marker">4</span><span class="login-step-label">验证 2FA</span></li>
+              <li class="login-step" data-login-stage="4"><span class="login-step-marker">5</span><span class="login-step-label">获取个人 RT</span></li>
               <li class="login-step" data-login-stage="5"><span class="login-step-marker">6</span><span class="login-step-label">授权工作区</span></li>
-              <li class="login-step" data-login-stage="6"><span class="login-step-marker">7</span><span class="login-step-label">转为 RT</span></li>
+              <li class="login-step" data-login-stage="6"><span class="login-step-marker">7</span><span class="login-step-label">完成</span></li>
             </ol>
           </aside>
           <div class="login-main">
@@ -337,6 +337,7 @@
                   <label class="login-mode-option"><input type="radio" name="login-workspace-mode" value="all" checked />全部工作区 RT</label>
                 </div>
               </fieldset>
+              <p class="login-help" id="login-mode-description">直接使用 Codex OAuth 验证账号、密码和 2FA；获取个人 RT 后，复用本次登录授权全部工作区。</p>
             </div>
             <section class="login-proxy-card" aria-labelledby="login-proxy-title">
               <div class="login-proxy-head">

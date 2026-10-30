@@ -21,7 +21,9 @@ export function createWorkspaceAuthService({
     const flow = new OpenAIJsonAuthFlow(account, {
       send(event, data) { if (event === 'log') onLog?.({ ...data, phase }); },
     }, {
-      phoneMode: 'sms', reuseStoredSession: false,
+      // All-workspace RT starts at Codex OAuth with password/TOTP. Neither a
+      // ChatGPT Web Session nor previously saved cookies are prerequisites.
+      phoneMode: 'sms', reuseStoredSession: false, requireStoredSession: false,
       humanPacingEnabled: false, ...accountRequestNetwork(account, network),
     });
     return runAllWorkspaceCodexAuth({

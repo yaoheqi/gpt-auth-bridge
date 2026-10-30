@@ -2006,7 +2006,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
   }
 
-  const LOGIN_STAGES = ["打开官网", "输入账号", "输入密码", "输入 2FA", "登录成功", "授权工作区", "转为 RT"];
+  const LOGIN_STAGES = ["连接 Codex", "输入账号", "验证密码", "验证 2FA", "获取个人 RT", "授权工作区", "完成"];
+  const SESSION_LOGIN_STAGES = ["连接 ChatGPT", "输入账号", "验证密码", "验证 2FA", "获取 Session"];
+  const ACCOUNT_ACTION_STAGES = ["准备账号操作", "输入账号", "验证密码", "验证 2FA", "登录成功", "处理工作区", "完成"];
+  function loginStagesForMode(mode) {
+    return mode === 'session' ? SESSION_LOGIN_STAGES : mode === 'action' ? ACCOUNT_ACTION_STAGES : LOGIN_STAGES;
+  }
   // DOM references stay outside the persisted browser state.
   const loginProgressNodes = new Map();
   const dirtyLoginRecords = new Set();
@@ -2070,10 +2075,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     return Number.isNaN(date.getTime()) ? new Date().toLocaleTimeString("zh-CN", { hour12: false }) : date.toLocaleTimeString("zh-CN", { hour12: false });
   }
 
-  function inferLoginStage(message, fallback = 0) {
+  function inferLoginStage(message, fallback = 0, phase = '') {
     const text = String(message || "");
-    if (/交换.*(?:code|token)|转为?\s*RT|RT\s*(?:完成|成功|已获取|已就绪)/i.test(text)) return 6;
-    if (/Business|workspace|工作区/i.test(text)) return 5;
+    if (/交换.*(?:code|token)|转为?\s*RT|RT\s*(?:完成|成功|已获取|已就绪)/i.test(text)) return phase === 'codex' ? 4 : 6;
+    if (/Business|workspace|工作区/i.test(text)) return phase === 'codex' ? 4 : 5;
     if (/登录完成|登录成功|Session\s*(?:已获取|已入库|有效)|accessToken/i.test(text)) return 4;
     if (/提交\s*(?:TOTP|2FA)|2FA\/MFA|MFA\s*(?:验证|挑战)|输入\s*2FA/i.test(text)) return 3;
     if (/提交账号密码|PasswordVerify|输入密码/i.test(text)) return 2;
@@ -2087,6 +2092,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     // Warnings and failures keep their diagnostic details, even when the
     // corresponding successful request is normally hidden.
     if (/^(?:warn|warning|error)$/i.test(level) || /失败|异常|错误|未找到|无法|重试|重新.*验证/i.test(text)) return text;
+    if (/密码\+2FA 账号，直接 Codex 登录/.test(text)) return '直接进行 Codex OAuth 登录，验证账号、密码和 2FA';
     if (/(?:预生成|复用已有)注册资料|零元.*试用|协议隔离环境|独立Cookie\/设备|账号已有本地 TOTP 密钥|清理旧 Session|协议重登第\s*\d+\//i.test(text)) return '';
     if (/准备检测代理连通性|OAuth 落点|Cookie 诊断|工作区授权页|密码\+2FA 账号|账号已注册，跳过注册|Codex OAuth[：:]|授权.*(?:跳转|落点)/i.test(text)) return '';
     if (/等待.*队列调度/.test(text)) return '已加入队列，等待执行';
@@ -2127,7 +2133,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     });
   }
 
-  function initializeLoginProgress(lines, { preserveExports = false } = {}) {
+  function initializeLoginProgress(lines, { preserveExports = false, workspaceMode = 'action' } = {}) {
     state.loginProgress = new Map();
     state.loginSensitiveValues = [];
     state.loginLastAccounts = [];
@@ -2145,6 +2151,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       state.loginProgress.set(email.toLowerCase(), {
         id: "",
         email,
+        workspaceMode,
         stage: 0,
         status: "waiting",
         logs: [],
@@ -2159,6 +2166,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function updateLoginExportActions() {
+    document.querySelector('#login-mode-description').textContent = getLoginWorkspaceMode() === 'session'
+      ? '登录 ChatGPT Web 并获取 Session，完成后结束。'
+      : '直接使用 Codex OAuth 验证账号、密码和 2FA；获取个人 RT 后，复用本次登录授权全部工作区。';
     for (const [key, button, label] of [
       ['selfLeave', elements.selfLeaveWorkspaces, '自踢'],
       ['logoutAll', elements.protocolLogoutAll, '退出全部会话'],
@@ -2250,8 +2260,13 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function updateLoginStageRail(records) {
+    const stages = loginStagesForMode(records[0]?.workspaceMode || getLoginWorkspaceMode());
+    elements.loginStepList.dataset.stepCount = String(stages.length);
     Array.from(elements.loginStepList.querySelectorAll("[data-login-stage]")).forEach((item) => {
       const index = Number(item.dataset.loginStage);
+      item.hidden = index >= stages.length;
+      item.classList.toggle('is-last-step', index === stages.length - 1);
+      item.querySelector('.login-step-label').textContent = stages[index] || '';
       const active = records.some((record) => record.status === "running" && record.stage === index);
       const done = records.length > 0 && records.every((record) => record.status === "success" || record.stage > index);
       const failed = records.some((record) => record.status === "error" && record.stage === index);
@@ -2269,8 +2284,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const counts = { waiting: 0, running: 0, success: 0, error: 0 };
     records.forEach((record) => { counts[record.status] = (counts[record.status] || 0) + 1; });
     const completed = counts.success + counts.error;
-    const progressUnits = records.reduce((total, record) => total + (record.status === "success" || record.status === "error" ? LOGIN_STAGES.length : (record.status === "waiting" ? 0 : record.stage + 1)), 0);
-    const overallPercent = records.length ? Math.round((progressUnits / (records.length * LOGIN_STAGES.length)) * 100) : 0;
+    const progressUnits = records.reduce((total, record) => total + (record.status === "success" || record.status === "error" ? 1
+      : record.status === "waiting" ? 0 : Math.min(1, (record.stage + 1) / loginStagesForMode(record.workspaceMode).length)), 0);
+    const overallPercent = records.length ? Math.round((progressUnits / records.length) * 100) : 0;
     elements.loginAccountCount.textContent = `${records.length || countLoginAccountLines()} 个账号`;
     elements.loginProgressSummary.textContent = `等待 ${counts.waiting} · 进行中 ${counts.running} · 成功 ${counts.success} · 失败 ${counts.error}`;
     elements.loginCompletedCount.textContent = `已完成 ${completed}/${records.length}`;
@@ -2310,9 +2326,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         elements.loginProgressList.append(article);
       }
       if (full) elements.loginProgressList.append(node.article);
-      const stage = LOGIN_STAGES[Math.min(record.stage, LOGIN_STAGES.length - 1)];
+      const stages = loginStagesForMode(record.workspaceMode);
+      const stage = stages[Math.min(record.stage, stages.length - 1)];
       const label = record.status === "waiting" ? "等待开始" : (record.status === "success" ? "已完成" : (record.status === "error" ? (validationFailureLabel(record) || `${stage}失败`) : stage));
-      const progress = record.status === "success" ? 100 : Math.max(5, Math.round(((record.stage + 1) / LOGIN_STAGES.length) * 100));
+      const progress = record.status === "success" ? 100 : Math.max(5, Math.min(100, Math.round(((record.stage + 1) / stages.length) * 100)));
       const log = record.logs.length
         ? record.logs.map((item) => `[${item.time}] ${item.level === "error" ? "失败 · " : (/^warn/.test(item.level) ? "注意 · " : "")}${item.message}`).join("\n")
         : "等待执行...";
@@ -3581,7 +3598,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       const previousPersonalIds = retry ? [...state.loginPersonalIds] : [];
       const previousBusinessIds = retry ? [...state.loginBusinessIds] : [];
 
-      initializeLoginProgress(lines, { preserveExports: Boolean(retry) });
+      initializeLoginProgress(lines, { preserveExports: Boolean(retry), workspaceMode });
       let imported = { rows: [], failed: 0 };
       let importedRows = [];
       let ids = retry ? retry.ids.map(String) : [];
@@ -3627,7 +3644,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
           appendLoginProgress(record, message, { stage, status: "running", time: data.time });
         } else if (name === "account_log") {
           appendLoginProgress(record, data.msg || data.error, {
-            stage: data.phase === "business" ? 5 : inferLoginStage(data.msg || data.error, record?.stage || 0),
+            stage: data.phase === "business" ? 5 : inferLoginStage(data.msg || data.error, record?.stage || 0, data.phase),
             status: "running", level: data.level, time: data.time,
           });
         } else if (name === "account_done") {
@@ -4012,6 +4029,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   elements.loginWorkspaceMode?.addEventListener("change", () => {
     if (state.loginRetry && state.loginRetry.workspaceMode !== getLoginWorkspaceMode()) clearLoginRetry();
     updateLoginExportActions();
+    updateLoginStageRail([...state.loginProgress.values()]);
   });
   elements.loginProxyMode?.addEventListener("change", () => selectedLoginProxyNetwork());
   elements.loginProxyLocalPort?.addEventListener("input", () => selectedLoginProxyNetwork());

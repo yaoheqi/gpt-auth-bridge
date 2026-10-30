@@ -182,7 +182,7 @@ def main():
                 page.evaluate("""() => pendingStream.enqueue(new TextEncoder().encode(
                     'event: account_log\\ndata: {"email":"late@example.com","msg":"Codex OAuth：登录并获取 refresh_token"}\\n\\n'
                     + 'event: account_log\\ndata: {"email":"late@example.com","msg":"提交账号密码"}\\n\\n'))""")
-                expect(page.locator(".login-account-stage")).to_have_text("输入密码")
+                expect(page.locator(".login-account-stage")).to_have_text("验证密码")
                 page.once("dialog", lambda dialog: dialog.accept())
                 page.locator("#clear-browser-data").click()
                 expect(page.locator("#browser-storage-status")).to_have_text("所有数据已清空")

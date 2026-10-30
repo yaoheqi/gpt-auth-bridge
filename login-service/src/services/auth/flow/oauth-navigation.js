@@ -255,9 +255,7 @@ export function createOAuthNavigationMethods({
 
       this.log(this.forbidPhoneChallenge
         ? '工作区授权完成，交换 code 获取 refresh_token'
-        : this.phoneMode === 'sms'
-          ? '接码完成，交换授权 code 获取 refresh_token'
-          : '交换授权 code 获取 refresh_token');
+        : 'Codex 授权完成，交换 code 获取 refresh_token');
       this.log(`继续 OAuth 跳转: ${continueURL}`);
       const result = await this.followOAuthRedirects(continueURL);
       if (isAgentIdentityRecord(result)) return result;
