@@ -3,7 +3,7 @@
   const SCHEMA_VERSION = 1;
   const COMPLETED_PUSH_HISTORY_LIMIT = 50;
   const DURABLE_KEYS = [
-    'format', 'skipped', 'health', 'browserAccounts', 'browserSettings', 'cpaSettings',
+    'format', 'skipped', 'health', 'browserAccounts', 'linkedAccountKeys', 'browserSettings', 'cpaSettings',
     'pushRetry', 'pushResults', 'pushOperations', 'activePushOperationId', 'operationHistory',
     'loginLastAccounts', 'loginLastIds', 'loginSessionIds', 'loginPersonalIds', 'loginBusinessIds',
     'logoutResults', 'logoutLog', 'loginLastResponse', 'loginLastRtKind', 'loginRetry', 'accountActionRetries', 'loginProgress',
@@ -11,7 +11,7 @@
     'loginSub2AvailableProxies', 'loginSub2ProxyId', 'loginProxyMode', 'loginProxyLocalPort', 'loginProxyPool',
     'monitorLastCheckAt', 'monitorRetries', 'monitorEnabled', 'monitorOwner', 'monitorStopped', 'conversionAt',
   ];
-  const ARRAY_KEYS = new Set(['skipped', 'health', 'browserAccounts', 'pushResults', 'pushOperations', 'operationHistory',
+  const ARRAY_KEYS = new Set(['skipped', 'health', 'browserAccounts', 'linkedAccountKeys', 'pushResults', 'pushOperations', 'operationHistory',
     'loginLastAccounts', 'loginLastIds', 'loginSessionIds', 'loginPersonalIds', 'loginBusinessIds',
     'logoutResults', 'logoutLog', 'loginProgress', 'loginSub2SelectedGroupIds', 'loginSub2AvailableGroups', 'loginSub2AvailableProxies']);
   const OBJECT_KEYS = new Set(['browserSettings', 'cpaSettings', 'monitorRetries', 'monitorStopped', 'accountActionRetries']);

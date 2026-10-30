@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import vm from 'node:vm';
 import { splitPasswordTotpLine } from '../docs/login-account-format.js';
+import { projectLoginAccounts, sharedAccountKey, healthCredentialKey, mergeSharedAccounts, loginCredentialLines } from '../docs/account-workspace.js';
 import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent } from '../docs/operation-contract.js';
 
 function createFakeElement(selector, options = {}) {
@@ -93,6 +94,7 @@ function loadPageScript(options = {}) {
   };
 
   const context = {
+    projectLoginAccounts, sharedAccountKey, healthCredentialKey, mergeSharedAccounts, loginCredentialLines,
     // Model evaluation has its own browser integration coverage.
     initializeModelEvaluation: () => ({ reset() {}, refresh() {} }),
     splitPasswordTotpLine,

@@ -305,17 +305,18 @@ def exercise_push(page, login_plans):
         assert_sub2_parameters(page)
         page.keyboard.press('Escape')
 
-        # Session conversion uses the same CPA payload as the local export.
+        # Conversion now includes the three login credentials plus the imported Session.
         page.locator('.top-nav [data-format="sub2api"]').click()
-        page.route('**/api/session-health', lambda route: route.fulfill(status=200, content_type='application/json', body=json.dumps({'results': [{'status': 200}]})))
+        page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200} for _ in route.request.post_data_json['accounts']]}))
         session = {'email': 'fixture@example.com', 'accessToken': 'fixture-session-access', 'refresh_token': 'fixture-session-rt', 'account': {'id': 'session'}}
         page.locator('#session-input').fill(json.dumps(session))
         expect(page.locator('#push-converted')).to_be_enabled()
         page.locator('#push-converted').click()
-        expect(page.locator('#push-status')).to_contain_text('成功 1，失败 0')
+        expect(page.locator('#push-status')).to_contain_text('成功 4，失败 0')
         expect(page.locator('#push-converted')).to_be_enabled()
-        assert calls[-1][2]['refresh_token'] == 'fixture-session-rt'
-        assert calls[-1][2]['type'] == 'codex'
+        converted = next(call[2] for call in calls[-4:] if call[2]['access_token'] == 'fixture-session-access')
+        assert converted['refresh_token'] == 'fixture-session-rt'
+        assert converted['type'] == 'codex'
 
         # Session-to-Sub2API must preserve real RTs and also allow AT-only input.
         page.locator('input[name="push-target"][value="sub2api"]').check()
@@ -326,7 +327,7 @@ def exercise_push(page, login_plans):
             page.locator('#session-input').fill(json.dumps(conversion))
             page.locator('#push-converted').click()
             expect(page.locator('#push-converted')).to_be_enabled()
-            expect(page.locator('#push-status')).to_contain_text('成功 1，失败 0')
+            expect(page.locator('#push-status')).to_contain_text('成功 4，失败 0')
             credentials = calls[-1][2]['accounts'][0]['credentials']
             assert credentials['access_token'] == 'fixture-session-access'
             assert credentials.get('refresh_token') == ('fixture-session-rt' if has_refresh else None)
@@ -410,10 +411,11 @@ def exercise_saved_conversion(source):
         sent = []
         def capture_push(route):
             sent.append(route.request.post_data_json['accounts'][0]['credentials'])
-            route.fulfill(status=200, content_type='application/json', body='{"ok":true,"imported":1,"results":[{"index":0,"status":"success"}]}')
+            count = len(route.request.post_data_json['accounts'])
+            route.fulfill(json={'ok': True, 'imported': count, 'results': [{'index': index, 'status': 'success'} for index in range(count)]})
         page.route('**/api/push/sub2api', capture_push)
         page.locator('#push-converted').click()
-        expect(page.locator('#push-status')).to_contain_text('成功 1，失败 0')
+        expect(page.locator('#push-status')).to_contain_text('成功 4，失败 0')
         assert sent[0]['refresh_token'] == 'fixture-session-rt'
         assert sent[0]['id_token'] == 'fixture.id.signature'
     finally:

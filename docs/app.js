@@ -1,6 +1,7 @@
 import { splitPasswordTotpLine } from './login-account-format.js';
 import { initializeTeamCheckout } from './team-checkout.js';
 import { initializeModelEvaluation } from './model-evaluation.js';
+import { projectLoginAccounts, sharedAccountKey, healthCredentialKey, mergeSharedAccounts, loginCredentialLines } from './account-workspace.js';
 import { validationFailureHint, validationFailureFields, validationFailureLabel } from './validation-failure.js';
 import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent } from './operation-contract.js';
 
@@ -41,6 +42,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     toolParsed: null,
     toolRecords: [],
     browserAccounts: [],
+    linkedAccountKeys: [],
     browserSettings: {},
     cpaSettings: {},
     pushRetry: null,
@@ -95,6 +97,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   let protocolLogoutBusy = false;
   let healthController;
   let evaluationEligibility = { accounts: [], total: 0, pending: false };
+  const sharedHealth = new Map();
+  const freshHealth = new Set();
 
   let browserStorageReady = false;
   let browserStorageAvailable = false;
@@ -121,8 +125,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       })),
     } };
   }
-  function acceptBrowserState(snapshot) {
+  async function acceptBrowserState(snapshot) {
     if (!snapshot || browserStorageCleared) return;
+    const isCurrent = workspaceTaskIsCurrent();
+    const previousSources = JSON.stringify(projectLoginAccounts(state.browserAccounts));
     const accounts = new Map(state.browserAccounts.map(account => [String(account.id), account]));
     for (const account of snapshot.accounts || []) accounts.set(String(account.id), account);
     state.browserAccounts = [...accounts.values()];
@@ -130,9 +136,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       state.browserSettings[key] = { ...state.browserSettings[key], ...value };
     }
     if (snapshot.settings?.sub2apiSettings) restoreSub2apiAccountConfig();
+    rememberLoginAccountKeys();
     // Credentials are a durable boundary even when they arrive as a partial SSE
     // snapshot. The caller waits before displaying completion or sending work.
-    return persistBrowserWorkspace(true, true);
+    await persistBrowserWorkspace(true, true);
+    if (isCurrent() && previousSources !== JSON.stringify(projectLoginAccounts(state.browserAccounts))) scheduleConvert();
   }
   function browserFields() {
     return [...document.querySelectorAll('input, textarea, select')]
@@ -624,6 +632,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         }
         visited.add(item);
 
+        if (item.session_access_token || item.session_json || item.openai_access_token || item.business_openai_access_token || item.business_workspace_credentials?.length) {
+          found.push(...projectLoginAccounts([item]).map(source => ({ ...source, sourceName, path })));
+          return;
+        }
+
         const token = firstNonEmpty(
           item.accessToken,
           item.access_token,
@@ -931,8 +944,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     return new Set(candidates.flatMap(extractEmails));
   }
 
-  function buildSub2apiToolResult(text, recordsOverride = null) {
-    const parsed = parseSub2apiRecords(text);
+  function buildSub2apiToolResult(text, recordsOverride = null, parsedInput = null) {
+    const parsed = { ...(parsedInput || parseSub2apiRecords(text)) };
     if (recordsOverride) parsed.records = recordsOverride;
     const operation = elements.sub2apiOperation.value || "json-to-txt";
     const records = operation === "json-to-txt" ? reorderSub2apiRecords(parsed.records) : parsed.records;
@@ -1065,6 +1078,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       record.providerSpecificData?.chatgptAccountId,
       record.providerSpecificData?.chatgpt_account_id,
       record.credentials?.chatgpt_account_id,
+      record.credentials?.account_id,
       auth.chatgpt_account_id,
       idAuth.chatgpt_account_id,
       record.provider === "codex" ? record.id : undefined,
@@ -1596,54 +1610,82 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     catch { throw new Error(`服务返回非 JSON 响应（HTTP ${response.status}）`); }
   }
 
-  async function startHealthCheck() {
+  function convertedHealthAccount(item) {
+    return { email: item.cpa.email, accessToken: item.cpa.access_token, accountId: item.cpa.account_id };
+  }
+
+  function toolHealthAccount(record) {
+    if (record.healthAccount) return record.healthAccount;
+    const account = record.account;
+    return { email: account?.credentials?.email || account?.email || account?.extra?.email,
+      accessToken: account?.credentials?.access_token || account?.credentials?.accessToken || account?.access_token || account?.accessToken,
+      accountId: account?.credentials?.chatgpt_account_id || account?.credentials?.account_id || account?.account_id };
+  }
+
+  function refreshSharedHealth() {
+    const converted = state.converted.map(convertedHealthAccount);
+    const visible = state.format === 'sub2api-tools' ? state.toolRecords.map(toolHealthAccount) : converted;
+    const results = visible.map((account, index) => {
+      const result = sharedHealth.get(healthCredentialKey(account));
+      return result ? { ...result, index } : null;
+    });
+    state.health = results.every(Boolean) ? results : [];
+    evaluationEligibility = { total: converted.length,
+      pending: Boolean(healthController) && converted.some(account => !freshHealth.has(healthCredentialKey(account))),
+      accounts: converted.filter(account => freshHealth.has(healthCredentialKey(account)) && sharedHealth.get(healthCredentialKey(account))?.status === 200) };
+  }
+
+  async function startHealthCheck({ force = true } = {}) {
     cancelHealthCheck();
+    const all = state.toolRecords.length ? state.toolRecords.map(toolHealthAccount) : state.converted.map(convertedHealthAccount);
+    const activeKeys = new Set(all.map(healthCredentialKey));
+    for (const key of sharedHealth.keys()) if (!activeKeys.has(key) || force) { sharedHealth.delete(key); freshHealth.delete(key); }
+    const accounts = all.filter(account => !freshHealth.has(healthCredentialKey(account)));
+    if (!accounts.length) {
+      refreshSharedHealth();
+      updateOutput();
+      if (!all.length) setStatus(elements.healthStatus, '等待自动测活。');
+      return;
+    }
     const controller = new AbortController();
     healthController = controller;
     const isCurrent = workspaceTaskIsCurrent(controller.signal);
     const run = state.healthRun;
-    state.health = [];
-    evaluationEligibility = { accounts: [], total: state.converted.length, pending: state.converted.length > 0 };
     resetLogoutAllSessions();
-    renderHealth();
+    refreshSharedHealth();
     updateOutput();
-    if (!state.converted.length) {
-      setStatus(elements.healthStatus, "等待自动测活。");
-      return;
-    }
     const concurrency = selectedTaskConcurrency();
-    setStatus(elements.healthStatus, `正在测活 ${state.converted.length} 个账号，并发 ${concurrency}...`);
+    setStatus(elements.healthStatus, `正在测活 ${accounts.length} 个账号，并发 ${concurrency}...`);
     try {
-      const response = await pageFetch("/api/session-health", {
-        method: "POST",
-        signal: controller.signal,
-        credentials: "same-origin",
-        headers: loginProxyHeaders({ "Content-Type": "application/json" }),
-         body: JSON.stringify({ includeUsage: true, includeDevices: true, includeTrial: true, concurrency, accounts: state.converted.map((item) => ({ accessToken: item.cpa.access_token, accountId: item.sub2apiAccount?.credentials?.chatgpt_account_id })) }),
+      const response = await pageFetch('/api/session-health', {
+        method: 'POST', signal: controller.signal, credentials: 'same-origin',
+        headers: loginProxyHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ includeUsage: true, includeDevices: true, includeTrial: true, concurrency, accounts }),
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (!isCurrent() || run !== state.healthRun) return;
-      state.health = Array.isArray(payload.results) ? payload.results : [];
-      if (!healthComplete()) throw new Error("测活接口返回结果不完整");
-      evaluationEligibility = { total: state.converted.length, pending: false,
-        accounts: state.converted.filter((_, index) => state.health[index]?.status === 200).map(item => ({
-          email: item.cpa.email, accessToken: item.cpa.access_token, accountId: item.cpa.account_id,
-        })) };
-      const ok = state.health.filter((item) => item.status === 200).length;
-      const failed = state.health.filter((item) => item.status == null).length;
-      const forbidden = state.health.filter((item) => item.status === 403).length;
-      setStatus(elements.healthStatus, `测活完成：HTTP 200 ${ok}，非 200 ${state.health.length - ok}，403 拒绝 ${forbidden}，失败 ${failed}。`, forbidden || failed ? "error" : "ok");
-      renderHealth();
-      updateOutput();
+      if (!Array.isArray(payload.results) || payload.results.length !== accounts.length) throw new Error('测活接口返回结果不完整');
+      accounts.forEach((account, index) => {
+        const key = healthCredentialKey(account);
+        sharedHealth.set(key, payload.results[index]);
+        freshHealth.add(key);
+      });
+      const results = all.map(account => sharedHealth.get(healthCredentialKey(account)));
+      const ok = results.filter(item => item?.status === 200).length;
+      const failed = results.filter(item => item?.status == null).length;
+      const forbidden = results.filter(item => item?.status === 403).length;
+      setStatus(elements.healthStatus, `测活完成：HTTP 200 ${ok}，非 200 ${results.length - ok}，403 拒绝 ${forbidden}，失败 ${failed}。`, forbidden || failed ? 'error' : 'ok');
     } catch (error) {
       if (!isCurrent() || run !== state.healthRun) return;
-      state.health = [];
-      evaluationEligibility = { accounts: [], total: state.converted.length, pending: false };
-      renderHealth();
-      updateOutput();
-      setStatus(elements.healthStatus, `自动测活失败：${error instanceof Error ? error.message : String(error)}`, "error");
-    } finally { if (healthController === controller) healthController = null; }
+      setStatus(elements.healthStatus, `自动测活失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+    } finally {
+      if (healthController === controller) {
+        healthController = null;
+        refreshSharedHealth();
+        updateOutput();
+      }
+    }
   }
 
   function cancelHealthCheck() {
@@ -1652,135 +1694,68 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     healthController = null;
   }
 
-  async function startToolHealthCheck() {
-    cancelHealthCheck();
-    const controller = new AbortController();
-    healthController = controller;
-    const isCurrent = workspaceTaskIsCurrent(controller.signal);
-    const run = state.healthRun;
-    state.health = [];
-    resetLogoutAllSessions();
-    renderHealth();
-    updateOutput();
-    if (!state.toolRecords.length) {
-      setStatus(elements.healthStatus, "等待自动测活。");
-      return;
+  function rebuildSharedAccounts(text, sourceMetadata = []) {
+    const stamp = Date.parse(state.conversionAt);
+    const now = new Date(Number.isFinite(stamp) ? stamp : Date.now());
+    let imported = [], parsed = null;
+    const skipped = [];
+    if (text.trim()) {
+      try { imported = parseInputDocuments(text).map((item, index) => ({ ...item, ...sourceMetadata[index] })); }
+      catch (error) { skipped.push({ sourceName: '输入', reason: error.message }); }
+      try { parsed = parseSub2apiRecords(text); } catch { /* Other supported account formats are converted below. */ }
     }
-    const concurrency = selectedTaskConcurrency();
-    setStatus(elements.healthStatus, `正在测活 ${state.toolRecords.length} 个账号，并发 ${concurrency}...`);
-    try {
-      const response = await pageFetch("/api/session-health", {
-        method: "POST",
-        signal: controller.signal,
-        credentials: "same-origin",
-        headers: loginProxyHeaders({ "Content-Type": "application/json" }),
-         body: JSON.stringify({ includeUsage: true, includeDevices: true, includeTrial: true, concurrency, accounts: state.toolRecords.map((record) => ({
-           accessToken: record.account?.credentials?.access_token || record.account?.credentials?.accessToken || record.account?.access_token || record.account?.accessToken,
-           accountId: record.account?.credentials?.chatgpt_account_id || record.account?.credentials?.account_id,
-         })) }),
-      });
-      const payload = await readJsonResponse(response);
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      if (!isCurrent() || run !== state.healthRun) return;
-      state.health = Array.isArray(payload.results) ? payload.results : [];
-      if (!toolHealthComplete()) throw new Error("测活接口返回结果不完整");
-      const ok = state.health.filter((item) => item.status === 200).length;
-      const failed = state.health.filter((item) => item.status == null).length;
-      const forbidden = state.health.filter((item) => item.status === 403).length;
-      setStatus(elements.healthStatus, `测活完成：HTTP 200 ${ok}，非 200 ${state.health.length - ok}，403 拒绝 ${forbidden}，失败 ${failed}。`, forbidden || failed ? "error" : "ok");
-      renderHealth();
-      updateOutput();
-    } catch (error) {
-      if (!isCurrent() || run !== state.healthRun) return;
-      state.health = [];
-      renderHealth();
-      updateOutput();
-      setStatus(elements.healthStatus, `自动测活失败：${error instanceof Error ? error.message : String(error)}`, "error");
-    } finally { if (healthController === controller) healthController = null; }
+    const convert = source => {
+      try { return { source, item: convertSession(source.value, { now, sourceName: source.sourceName, sourcePath: source.path }) }; }
+      catch (error) { skipped.push({ sourceName: source.sourceName, path: source.path, reason: error.message }); return null; }
+    };
+    rememberLoginAccountKeys();
+    const linked = new Set(state.linkedAccountKeys);
+    const manual = imported.map(convert).filter(Boolean).filter(row => !linked.has(sharedAccountKey(row.item.cpa)));
+    const login = projectLoginAccounts(state.browserAccounts).map(convert).filter(Boolean);
+    const merged = mergeSharedAccounts(manual, login, row => sharedAccountKey(row.item.cpa));
+    state.sessions = merged.map(row => row.source);
+    state.converted = merged.map(row => row.item);
+    state.skipped = skipped;
+    const record = item => ({ account: item.sub2apiAccount, type: 'sub2api-data', version: 1, proxies: [] });
+    const keyOfRecord = row => {
+      try { return sharedAccountKey(convertSession(row.account, { now }).cpa); }
+      catch { return sharedAccountKey(row.account); }
+    };
+    const manualRecords = parsed ? parsed.records.filter(row => !linked.has(keyOfRecord(row))) : manual.map(row => record(row.item));
+    state.toolRecords = mergeSharedAccounts(manualRecords, login.map(row => record(row.item)), keyOfRecord);
+    for (const row of state.toolRecords) {
+      try { row.healthAccount = convertedHealthAccount(convertSession(row.account, { now })); }
+      catch { /* Non-token records remain available to the batch tools. */ }
+    }
+    state.toolParsed = { firstDocument: parsed?.firstDocument || { type: 'sub2api-data', version: 1 },
+      proxies: parsed?.proxies || [], records: state.toolRecords };
+    state.toolResult = null;
+    refreshSharedHealth();
   }
 
   function convertFromText(text) {
-    if (state.format === "sub2api-tools") {
-      state.healthRun += 1;
-      state.health = [];
-      resetLogoutAllSessions();
-      state.converted = [];
-      state.skipped = [];
-      state.sessions = [];
-      state.toolParsed = null;
-      state.toolRecords = [];
-      state.toolParsed = parseSub2apiRecords(text);
-      state.toolRecords = state.toolParsed.records;
-      state.toolResult = buildSub2apiToolResult(text, selectedToolRecords());
-      updateOutput();
-      startToolHealthCheck();
-      return;
-    }
-
-    state.toolResult = null;
-    state.toolParsed = null;
-    state.toolRecords = [];
-    const sources = parseInputDocuments(text);
-    const converted = [];
-    const skipped = [];
-    const now = new Date();
-    state.conversionAt = now.toISOString();
-
-    sources.forEach((item, index) => {
-      try {
-        converted.push(convertSession(item.value, {
-          now,
-          sourceName: item.sourceName,
-          sourcePath: item.path || `$[${index}]`,
-        }));
-      } catch (error) {
-        skipped.push({
-          sourceName: item.sourceName,
-          path: item.path,
-          reason: error instanceof Error ? error.message : "无法转换",
-        });
-      }
-    });
-
-    if (!sources.length) {
-      skipped.push({
-        sourceName: "pasted-json",
-        path: "$",
-        reason: "未找到包含 accessToken 和 user/email 的 session 对象",
-      });
-    }
-
-    state.converted = converted;
-    state.skipped = skipped;
-    state.sessions = sources;
+    state.conversionAt = new Date().toISOString();
+    rebuildSharedAccounts(text);
     updateOutput();
-    startHealthCheck();
+    startHealthCheck({ force: false });
+  }
+
+  function rememberLoginAccountKeys() {
+    const keys = new Set(state.linkedAccountKeys);
+    for (const source of projectLoginAccounts(state.browserAccounts)) {
+      try { keys.add(sharedAccountKey(convertSession(source.value).cpa)); } catch { /* No usable credential. */ }
+    }
+    state.linkedAccountKeys = [...keys];
   }
 
   function restoreDerivedWorkspace(sourceMetadata = []) {
-    const text = elements.input.value;
-    state.sessions = [];
-    state.converted = [];
-    state.toolParsed = null;
-    state.toolRecords = [];
-    state.toolResult = null;
-    if (!text.trim()) return;
-    try {
-      if (state.format === 'sub2api-tools') {
-        state.toolParsed = parseSub2apiRecords(text);
-        state.toolRecords = state.toolParsed.records;
-        state.toolResult = buildSub2apiToolResult(text, selectedToolRecords());
-        return;
-      }
-      const sources = parseInputDocuments(text);
-      const stamp = Date.parse(state.conversionAt);
-      const now = Number.isFinite(stamp) ? new Date(stamp) : new Date();
-      state.sessions = sources.map((item, index) => ({ ...item, ...sourceMetadata[index] }));
-      for (const item of state.sessions) {
-        try { state.converted.push(convertSession(item.value, { now, sourceName: item.sourceName, sourcePath: item.path })); }
-        catch { /* Persisted parse issues remain available in the issues panel. */ }
-      }
-    } catch { /* Keep unfinished/invalid source text available for editing. */ }
+    const savedHealth = state.health;
+    rebuildSharedAccounts(elements.input.value, sourceMetadata);
+    const visible = state.format === 'sub2api-tools' ? state.toolRecords.map(toolHealthAccount) : state.converted.map(convertedHealthAccount);
+    if (savedHealth.length === visible.length) visible.forEach((account, index) => {
+      if (savedHealth[index]) sharedHealth.set(healthCredentialKey(account), savedHealth[index]);
+    });
+    refreshSharedHealth();
   }
 
   function setStatus(element, text, tone = "") {
@@ -1791,6 +1766,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function updateOutput() {
+    refreshSharedHealth();
     modelEvaluation.refresh();
     updatePushControls();
     persistBrowserWorkspace();
@@ -1800,7 +1776,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     let outputText = "";
 
     if (isTool && state.toolParsed) {
-      state.toolResult = buildSub2apiToolResult(elements.input.value, selectedToolRecords());
+      try {
+        state.toolResult = buildSub2apiToolResult(elements.input.value, selectedToolRecords(), state.toolParsed);
+      } catch (error) {
+        state.toolResult = null;
+        setStatus(elements.inputStatus, error.message, 'error');
+      }
     }
     if (isTool && state.toolResult) {
       outputText = elements.sub2apiOperation.value === "split"
@@ -1817,6 +1798,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     elements.statCount.textContent = String(isTool ? (state.toolResult?.accountCount || 0) : (isLogin ? state.loginLastAccounts.length : state.converted.length));
     elements.statErrors.textContent = String(state.skipped.length);
     elements.statFormat.textContent = OUTPUT_LABELS[state.format];
+    const syncedCount = projectLoginAccounts(state.browserAccounts).length;
+    document.querySelector('#shared-account-status').textContent = `共享账号 ${state.converted.length} 个 · 协议登录提供 ${syncedCount} 个 · 测活通过 ${evaluationEligibility.accounts.length} 个`;
+    document.querySelector('#login-shared-status').textContent = syncedCount
+      ? `已同步 ${syncedCount} 个个人 / 工作区凭据，可直接切换到格式转换、批处理和模型测试。`
+      : '登录成功后自动同步到其他功能，无需下载再导入。';
     elements.outputSubtitle.textContent = isTool ? "当前输出为 sub2api 批处理结果。" : (isLogin ? "协议登录完成后可导出 sub2api JSON。" : `当前输出为 ${OUTPUT_LABELS[state.format]} 导入 JSON。`);
     elements.downloadOutput.textContent = isTool && elements.sub2apiOperation.value === "split"
       ? "下载当前组"
@@ -1878,7 +1864,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     modelEvaluation.reset();
     cancelHealthCheck();
     const text = elements.input.value;
-    if (!text.trim()) {
+    if (!text.trim() && !projectLoginAccounts(state.browserAccounts).length) {
+      sharedHealth.clear();
+      freshHealth.clear();
       state.healthRun += 1;
       state.health = [];
       resetLogoutAllSessions();
@@ -1976,6 +1964,29 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       }
       return line;
     });
+  }
+
+  function useSharedLoginAccounts(showStatus) {
+    if (monitorBusy || selfLeaveBusy || protocolLogoutBusy || elements.startProtocolLogin.disabled || elements.resetLoginTotp.disabled) return;
+    const candidates = [...state.browserAccounts];
+    const visit = value => {
+      if (!value || typeof value !== 'object') return;
+      if (!Array.isArray(value)) candidates.push(value);
+      Object.values(value).forEach(child => { if (child && typeof child === 'object') visit(child); });
+    };
+    try { parseJsonValues(elements.input.value).forEach(visit); } catch { /* Keep incomplete input available for editing. */ }
+    const existing = new Set(elements.loginAccounts.value.split(/\r?\n/).filter(Boolean).map(line => loginAccountEmail(line).toLowerCase()));
+    const lines = loginCredentialLines(candidates).filter(line => !existing.has(loginAccountEmail(line).toLowerCase()));
+    if (lines.length) {
+      elements.loginAccounts.value = [elements.loginAccounts.value.trim(), ...lines].filter(Boolean).join('\n');
+      clearLoginRetry();
+      state.accountActionRetries = {};
+      updateLoginCopyActions();
+      elements.loginAccountCount.textContent = `${countLoginAccountLines()} 个账号`;
+      persistBrowserWorkspace();
+    }
+    if (showStatus) setStatus(elements.loginStatus, lines.length ? `已加入 ${lines.length} 个共享账号，可选择登录或账号操作。`
+      : '没有新增的完整登录凭据。仅含 Token 的账号可转换、测活和测试模型；协议登录需要邮箱、密码和 2FA。');
   }
 
   async function importLoginFiles(files) {
@@ -3831,6 +3842,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
 
     const documents = [];
+    const sourceTexts = [];
     const skipped = [];
 
     for (const file of sourceFiles) {
@@ -3838,6 +3850,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         const text = await file.text();
         if (!isCurrent()) return;
         const parsedValues = parseJsonValues(text);
+        sourceTexts.push(text);
         const found = parsedValues.flatMap((parsed) => collectSessionLikeObjects(parsed, file.webkitRelativePath || file.name));
         if (!found.length) {
           skipped.push({
@@ -3877,15 +3890,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       }
     });
 
-    state.sessions = documents;
     modelEvaluation.reset();
-    state.converted = converted;
+    elements.input.value = sourceTexts.join('\n');
+    rebuildSharedAccounts(elements.input.value, documents.map(({ sourceName, path }) => ({ sourceName, path })));
     state.skipped = convertSkipped;
-    elements.input.value = documents.length === 1
-      ? JSON.stringify(documents[0].value, null, 2)
-      : JSON.stringify(documents.map((item) => item.value), null, 2);
     updateOutput();
-    startHealthCheck();
+    startHealthCheck({ force: false });
     setStatus(elements.inputStatus, `读取 ${sourceFiles.length} 个文件，生成 ${converted.length} 个账号，跳过 ${convertSkipped.length} 项。`, converted.length ? "ok" : "error");
   }
 
@@ -3946,7 +3956,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     elements.healthStatus.classList.remove("hidden");
     elements.healthTable.classList.remove("hidden");
     elements.inputTitle.textContent = isTool ? "sub2api 批处理" : (isLogin ? "协议登录输入" : "Session JSON");
-    elements.inputSubtitle.textContent = isTool ? "粘贴 sub2api JSON/TXT，或选择一个或多个文件。" : (isLogin ? "在左侧输入账号并启动协议登录，右侧查看结果。" : "粘贴 ChatGPT Web session，或拖入一个或多个 JSON 文件。");
+    elements.inputSubtitle.textContent = isTool ? "沿用共享账号，也可粘贴或导入 Sub2API、Session、CPA 文件。" : (isLogin ? "在左侧输入账号并启动协议登录，右侧查看结果。" : "粘贴或导入账号；协议登录的结果会自动合并，无需再次导入。");
     elements.loadExample.textContent = isTool ? "填入 sub2api 示例" : "填入示例结构";
     elements.input.disabled = isLogin;
     elements.pickFiles.disabled = isLogin;
@@ -3970,15 +3980,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     },
   });
   const selectFormat = (format) => {
-    const previous = state.format;
     state.format = format;
     updateToolControls();
-    if (format === 'model-evaluation' || (previous === 'model-evaluation' && ['sub2api', 'cpa', 'cockpit', 'codex'].includes(format))) {
-      updateOutput();
-      if (format === 'sub2api' && !evaluationEligibility.total && state.converted.length) startHealthCheck();
-      return;
-    }
-    scheduleConvert();
+    updateOutput();
+    if (format === 'protocol-login') useSharedLoginAccounts(false);
+    if (format === 'model-evaluation' && !healthController && !evaluationEligibility.accounts.length && state.converted.length) startHealthCheck({ force: false });
     if (state.format === "protocol-login" && !state.loginSub2Loaded) {
       const isCurrent = workspaceTaskIsCurrent();
       loadLoginSub2Config().catch((error) => {
@@ -3986,8 +3992,14 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         setStatus(elements.loginSub2Status, `加载 Sub2 配置失败：${error instanceof Error ? error.message : String(error)}`, "error");
       });
     }
+    persistBrowserWorkspace(true);
   };
   elements.formatButtons.forEach((button) => button.addEventListener("click", () => selectFormat(button.dataset.format)));
+  document.querySelectorAll('[data-account-destination]').forEach(button => button.addEventListener('click', () => selectFormat(button.dataset.accountDestination)));
+  document.querySelector('#use-shared-login-accounts').addEventListener('click', () => useSharedLoginAccounts(true));
+  for (const selector of ['#evaluation-health-check', '#shared-health-check']) {
+    document.querySelector(selector).addEventListener('click', () => startHealthCheck());
+  }
   const bindTabKeyboard = (selector, onSelect) => {
     const tabs = [...document.querySelectorAll(selector)];
     for (const tab of tabs) {
@@ -4221,7 +4233,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   const selectOperation = (operation) => {
     elements.sub2apiOperation.value = operation;
     updateToolControls();
-    scheduleConvert();
+    updateOutput();
   };
   elements.operationButtons.forEach((button) => button.addEventListener("click", () => selectOperation(button.dataset.operation)));
   bindTabKeyboard("#tool-operation-buttons [role=\"tab\"]", (tab) => selectOperation(tab.dataset.operation));
@@ -4237,7 +4249,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
   }
   elements.splitScope?.addEventListener("change", updateOutput);
-  elements.mailInput?.addEventListener("input", scheduleConvert);
+  elements.mailInput?.addEventListener("input", updateOutput);
   elements.pickMailFile?.addEventListener("click", () => elements.mailFileInput?.click());
   elements.mailFileInput?.addEventListener("change", async (event) => {
     const isCurrent = workspaceTaskIsCurrent();
@@ -4246,7 +4258,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       const text = await file.text();
       if (!isCurrent()) return;
       elements.mailInput.value = text;
-      scheduleConvert();
+      updateOutput();
     }
     event.target.value = "";
   });
@@ -4287,6 +4299,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       node, value: node.value, checked: node.checked, disabled: node.disabled, type: node.type,
     }));
     const blockWorkspaceTasks = (release = false) => {
+      sharedHealth.clear();
+      freshHealth.clear();
       evaluationEligibility = { accounts: [], total: 0, pending: false };
       teamCheckout.reset();
       modelEvaluation.reset();
@@ -4455,6 +4469,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     taskConcurrency = config.taskConcurrency;
     modelEvaluation.refresh();
     elements.taskConcurrencyValue.textContent = String(taskConcurrency);
+    if (state.format === 'model-evaluation' && state.converted.length) startHealthCheck({ force: false });
   } catch {
     elements.taskConcurrencyValue.textContent = '按服务端设置';
   }

@@ -83,6 +83,7 @@ def main():
                                   body="".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events))
 
                 page.route("**/api/v2/accounts/protocol-login-pipeline", oauth)
+                page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200} for _ in route.request.post_data_json['accounts']]}))
                 page.goto(url)
                 page.wait_for_function("() => !!window.browserWorkspace")
                 expect(page.locator("#sub2api-concurrency")).to_have_value("50")

@@ -2152,3 +2152,7 @@ body.is-model-evaluation { background: #f5f7f8; }
 #evaluation-fields .evaluation-optional-question { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; cursor: pointer; }
 #evaluation-fields .evaluation-optional-question input { width: 15px; height: 15px; padding: 0; margin: 0; accent-color: var(--accent); }
 .evaluation-optional-question small, #evaluation-concurrency { color: var(--muted); font-weight: 400; font-size: 11px; }
+.shared-account-status { color: var(--accent, #24505a); font-size: 13px; }
+.shared-account-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 16px; }
+.shared-account-links p { flex-basis: 100%; margin: 0 0 4px; font-size: 13px; color: var(--muted, #61717b); }
+.shared-account-links .button { padding: 8px 12px; font-size: 13px; }
