@@ -37,6 +37,8 @@ def fixture_page(browser, seed=None):
             raise AssertionError('Unexpected API request: ' + path)
         else:
             file = ROOT / 'docs' / ('index.html' if path == '/' else path.lstrip('/'))
+            if path == '/vendor/markdown-it.min.js':
+                file = ROOT / 'node_modules/markdown-it/dist/markdown-it.min.js'
             content_type = {'.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml'}[file.suffix]
             route.fulfill(content_type=content_type, body=file.read_text(encoding='utf-8'))
 
