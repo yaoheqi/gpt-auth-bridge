@@ -29,6 +29,9 @@ export function validateEvaluation(body = {}) {
     }
     return { question, model, endpoint: endpoint.href, key: api.key.trim(), protocol: api.protocol };
   }
+  if (String(account.planType || account.plan_type || '').trim().toLowerCase() === 'free') {
+    throw Object.assign(new Error('free 账号不参与模型测试'), { statusCode: 400 });
+  }
   return { account, question, model, endpoint: 'https://chatgpt.com/backend-api/codex/responses', key: account.accessToken.trim(), protocol: 'responses' };
 }
 

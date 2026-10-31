@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import socket
@@ -85,7 +86,9 @@ def main():
                 page = browser.new_page(viewport={'width': 1440, 'height': 1100})
                 errors, requests = [], []
                 page.on('pageerror', lambda error: errors.append(str(error)))
-                page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200}, {'status': 401}, {'status': 200}]}))
+                page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [
+                    {'status': 200, 'usage': {'planType': 'plus'}}, {'status': 401}, {'status': 200},
+                    {'status': 200}, {'status': 200, 'usage': {'planType': 'free'}}, {'status': 200}]}))
 
                 def evaluate(route):
                     body = route.request.post_data_json
@@ -111,18 +114,27 @@ def main():
                 expect(page.locator('#evaluation-model')).to_have_value('gpt-6-astra')
                 page.locator('#evaluation-import').click()
                 accounts = [{'accessToken': 'fixture-token', 'user': {'email': email}} for email in ['first@example.com', 'failed@example.com', 'third@example.com']]
+                # Fresh usage overrides stale imported plans; fallback to Session, CPA and JWT plans.
+                accounts[0]['account'] = {'planType': 'free'}
+                accounts.extend([
+                    {'accessToken': 'fixture-token', 'user': {'email': 'free-session@example.com'}, 'account': {'planType': ' FREE '}},
+                    {'access_token': 'fixture-token', 'email': 'free-usage@example.com', 'plan_type': 'plus'},
+                    {'access_token': 'header.' + base64.urlsafe_b64encode(json.dumps({'https://api.openai.com/auth': {'chatgpt_plan_type': 'free'}}).encode()).decode().rstrip('=') + '.signature', 'email': 'free-jwt@example.com'},
+                ])
                 page.locator('#evaluation-import-text').fill(json.dumps(accounts))
                 page.locator('#evaluation-import-submit').click()
                 expect(page.locator('#evaluation-import-dialog')).not_to_be_visible()
                 expect(panel).to_be_visible()
                 expect(page.locator('#health-status')).to_contain_text('测活完成')
                 page.locator('#model-evaluation-tab').click()
-                expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 3 个导入账号')
+                expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 6 个导入账号 · 已跳过 3 个 free 账号')
+                expect(page.locator('#shared-account-status')).to_contain_text('测活通过 5 个')
                 expect(page.locator('#evaluation-include-pelican')).not_to_be_checked()
                 expect(page.locator('#evaluation-concurrency')).to_have_text('服务端并发：10')
                 start.click()
                 expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
                 assert len(requests) == 2
+                assert {body['account']['email'] for body in requests} == {'first@example.com', 'third@example.com'}
                 assert all(body['question'] == 'candy' for body in requests)
                 expect(page.locator('#evaluation-case-title')).to_have_text('糖果题')
                 requests.clear()
@@ -130,7 +142,7 @@ def main():
                 start.click()
                 expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
                 assert len(requests) == 4
-                assert all(body['model'] == 'gpt-6-astra' and body['account']['email'] != 'failed@example.com' for body in requests)
+                assert all(body['model'] == 'gpt-6-astra' and body['account']['email'] in ['first@example.com', 'third@example.com'] for body in requests)
                 expect(page.locator('#evaluation-status')).to_contain_text('失败 1')
                 expect(page.locator('#evaluation-progress-count')).to_have_text('4 / 4')
                 expect(page.frame_locator('#evaluation-preview-frame').locator('svg text')).to_have_text('Pelican in motion')
@@ -217,7 +229,7 @@ def main():
                 expect(panel).to_be_visible()
                 expect(page.locator('#evaluation-api-key')).to_have_value('')
                 page.locator('input[name="evaluation-source"][value="accounts"]').check()
-                expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 3 个导入账号')
+                expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 6 个导入账号 · 已跳过 3 个 free 账号')
                 expect(start).to_be_enabled()
                 page.locator('#evaluation-import').click()
                 page.locator('#evaluation-import-text').fill('{invalid')
@@ -226,7 +238,7 @@ def main():
                 page.locator('#evaluation-import-text').fill('')
                 page.locator('#evaluation-import-files').set_input_files({'name': 'accounts.json', 'mimeType': 'application/json', 'buffer': json.dumps(accounts).encode()})
                 page.locator('#evaluation-import-submit').click()
-                expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 3 个导入账号')
+                expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 6 个导入账号 · 已跳过 3 个 free 账号')
                 expect(panel).to_be_visible()
                 expect(page.locator('#evaluation-include-pelican')).not_to_be_checked()
                 page.unroute('**/api/session-health')
@@ -257,6 +269,17 @@ def main():
                 expect(page.locator('#evaluation-status')).to_contain_text('已停止')
                 for route in pending[1:]:
                     route.abort()
+                # A healthy free-only import must disable testing, including programmatic submit.
+                page.unroute('**/api/session-health')
+                page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200, 'usage': {'planType': 'free'}}]}))
+                page.locator('#evaluation-import').click()
+                page.locator('#evaluation-import-text').fill(json.dumps([accounts[3]]))
+                page.locator('#evaluation-import-submit').click()
+                expect(page.locator('#evaluation-account-count')).to_have_text('0 个可测试账号 / 1 个导入账号 · 已跳过 1 个 free 账号')
+                expect(start).to_be_disabled()
+                page.locator('#evaluation-form').dispatch_event('submit')
+                expect(page.locator('#evaluation-status')).to_contain_text('没有可测试账号')
+                assert len(pending) == 11
                 assert not errors, errors
                 browser.close()
                 print('PASS: inline paste/file import, healthy-only filtering, Markdown/raw and injection protection, result switcher, first-screen preview, CSS/SMIL pause/resume, stream pause persistence, API modes, cancellation and key privacy')

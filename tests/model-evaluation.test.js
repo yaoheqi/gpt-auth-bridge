@@ -54,6 +54,19 @@ test('upstream failure does not reflect response contents or credentials', async
   }), { message: '模型请求失败（HTTP 401）' });
 });
 
+test('free accounts are rejected before model requests while API mode stays independent', async () => {
+  for (const plan of [{ planType: 'free' }, { planType: ' FREE ' }, { plan_type: 'free' }]) {
+    await assert.rejects(evaluateModel({ account: { ...account, ...plan }, question: 'candy' }, {
+      fetchImpl: () => assert.fail('free account must not send a model request'),
+    }), { statusCode: 400, message: 'free 账号不参与模型测试' });
+  }
+  for (const planType of ['plus', 'pro', 'business', 'team', 'enterprise', '']) {
+    assert.equal(validateEvaluation({ account: { ...account, planType }, question: 'candy' }).account.planType, planType);
+  }
+  assert.equal(validateEvaluation({ account: { ...account, planType: 'free' },
+    api: { baseUrl: 'https://example.com', protocol: 'responses', key: 'fixture' }, question: 'candy' }).account, undefined);
+});
+
 test('API endpoints normalize base and full URLs without forwarding account credentials', async () => {
   for (const [baseUrl, protocol, expected] of [
     ['https://example.com', 'responses', 'https://example.com/v1/responses'],

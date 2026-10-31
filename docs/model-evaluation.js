@@ -37,7 +37,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   function refresh() {
     const eligibility = getEligibility();
     find('account-count').textContent = eligibility.pending ? `正在测活 ${eligibility.total} 个账号…`
-      : `${eligibility.accounts.length} 个可测试账号 / ${eligibility.total} 个导入账号`;
+      : `${eligibility.accounts.length} 个可测试账号 / ${eligibility.total} 个导入账号${eligibility.skippedFree ? ` · 已跳过 ${eligibility.skippedFree} 个 free 账号` : ''}`;
     const apiMode = mode() === 'api';
     find('accounts-source').hidden = apiMode;
     find('api-source').hidden = !apiMode;
@@ -223,7 +223,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
       catch { status.textContent = '请填写有效的 HTTP(S) API 地址和 API Key。'; return; }
     }
     const accounts = apiMode ? [null] : [...getEligibility().accounts];
-    if (!accounts.length) { status.textContent = '没有测活通过的账号，请先在格式转换中完成测活。'; return; }
+    if (!accounts.length) { status.textContent = '没有可测试账号：仅测试测活通过的非 free 账号，请导入账号或重新测活。'; return; }
     const current = new AbortController(); controller = current;
     const run = ++generation, ownsWorkspace = isWorkspaceCurrent();
     const active = () => run === generation && ownsWorkspace() && !current.signal.aborted;

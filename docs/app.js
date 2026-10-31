@@ -1630,9 +1630,17 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       return result ? { ...result, index } : null;
     });
     state.health = results.every(Boolean) ? results : [];
+    const testAccounts = converted.map((account, index) => {
+      const key = healthCredentialKey(account);
+      const health = freshHealth.has(key) ? sharedHealth.get(key) : null;
+      return { ...account, planType: firstNonEmpty(health?.usage?.planType, state.converted[index].cpa.plan_type) };
+    });
+    const isFree = account => String(account.planType || '').trim().toLowerCase() === 'free';
+    const healthy = testAccounts.filter(account => freshHealth.has(healthCredentialKey(account)) && sharedHealth.get(healthCredentialKey(account))?.status === 200);
     evaluationEligibility = { total: converted.length,
+      healthyCount: healthy.length, skippedFree: testAccounts.filter(isFree).length,
       pending: Boolean(healthController) && converted.some(account => !freshHealth.has(healthCredentialKey(account))),
-      accounts: converted.filter(account => freshHealth.has(healthCredentialKey(account)) && sharedHealth.get(healthCredentialKey(account))?.status === 200) };
+      accounts: healthy.filter(account => !isFree(account)) };
   }
 
   async function startHealthCheck({ force = true } = {}) {
@@ -1799,7 +1807,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     elements.statErrors.textContent = String(state.skipped.length);
     elements.statFormat.textContent = OUTPUT_LABELS[state.format];
     const syncedCount = projectLoginAccounts(state.browserAccounts).length;
-    document.querySelector('#shared-account-status').textContent = `共享账号 ${state.converted.length} 个 · 协议登录提供 ${syncedCount} 个 · 测活通过 ${evaluationEligibility.accounts.length} 个`;
+    document.querySelector('#shared-account-status').textContent = `共享账号 ${state.converted.length} 个 · 协议登录提供 ${syncedCount} 个 · 测活通过 ${evaluationEligibility.healthyCount || 0} 个`;
     document.querySelector('#login-shared-status').textContent = syncedCount
       ? `已同步 ${syncedCount} 个个人 / 工作区凭据，可直接切换到格式转换、批处理和模型测试。`
       : '登录成功后自动同步到其他功能，无需下载再导入。';
