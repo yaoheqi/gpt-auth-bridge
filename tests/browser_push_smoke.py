@@ -310,13 +310,50 @@ def exercise_push(page, login_plans):
         page.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200} for _ in route.request.post_data_json['accounts']]}))
         session = {'email': 'fixture@example.com', 'accessToken': 'fixture-session-access', 'refresh_token': 'fixture-session-rt', 'account': {'id': 'session'}}
         page.locator('#session-input').fill(json.dumps(session))
+        expect(page.locator('#converter-skip-free')).to_be_checked()
+        expect(page.locator('#converter-free-count')).to_have_text('（1）')
+        assert page.evaluate('''() => {
+            const option = document.querySelector('#converter-free-filter');
+            return option.previousElementSibling.classList.contains('monitor-controls')
+                && option.nextElementSibling.classList.contains('push-choice-controls');
+        }''')
+        for width in [1440, 390]:
+            original_viewport = page.viewport_size
+            page.set_viewport_size({'width': width, 'height': 900})
+            option = page.locator('#converter-free-filter').bounding_box()
+            assert option and option['x'] >= 0 and option['x'] + option['width'] <= width
+            if os.environ.get('PUSH_UI_SCREENSHOTS'):
+                page.evaluate('window.scrollTo(0, 0)')
+                page.screenshot(path=str(Path(os.environ['PUSH_UI_SCREENSHOTS']) / f'converter-filter-{width}.png'))
+            page.set_viewport_size(original_viewport)
         expect(page.locator('#push-converted')).to_be_enabled()
+        before = len(calls)
         page.locator('#push-converted').click()
-        expect(page.locator('#push-status')).to_contain_text('成功 4，失败 0')
+        expect(page.locator('#push-status')).to_contain_text('成功 3，失败 0')
         expect(page.locator('#push-converted')).to_be_enabled()
-        converted = next(call[2] for call in calls[-4:] if call[2]['access_token'] == 'fixture-session-access')
+        assert {call[2]['account_id'] for call in calls[before:]} == {'session', 'personal', 'business'}
+        converted = next(call[2] for call in calls[before:] if call[2]['access_token'] == 'fixture-session-access')
         assert converted['refresh_token'] == 'fixture-session-rt'
         assert converted['type'] == 'codex'
+        # The same default applies to Sub2API; downloads still contain free accounts.
+        page.locator('input[name="push-target"][value="sub2api"]').check()
+        page.locator('#push-converted').click()
+        expect(page.locator('#push-converted')).to_be_enabled()
+        expect(page.locator('#push-status')).to_contain_text('成功 3，失败 0')
+        assert {item['credentials']['chatgpt_account_id'] for item in calls[-1][2]['accounts']} == {'session', 'personal', 'business'}
+        with page.expect_download() as download:
+            page.locator('#download-output').click()
+        assert len(json.loads(Path(download.value.path()).read_text(encoding='utf-8'))['accounts']) == 4
+        # Opting in is durable and applies to both target formats.
+        page.locator('#converter-skip-free').uncheck()
+        expect(page.locator('#converter-skip-free')).to_be_enabled()
+        page.reload()
+        expect(page.locator('#converter-skip-free')).not_to_be_checked()
+        page.locator('input[name="push-target"][value="cpa"]').check()
+        before = len(calls)
+        page.locator('#push-converted').click()
+        expect(page.locator('#push-status')).to_contain_text('成功 4，失败 0')
+        assert {call[2]['account_id'] for call in calls[before:]} == {'session', 'personal', 'business', 'free-workspace'}
 
         # Session-to-Sub2API must preserve real RTs and also allow AT-only input.
         page.locator('input[name="push-target"][value="sub2api"]').check()
@@ -346,7 +383,7 @@ def exercise_push(page, login_plans):
             clean = fresh.new_page()
             pending = []
             clean.route('**/api/push/cpa', lambda route: pending.append(route))
-            clean.route('**/api/session-health', lambda route: route.fulfill(status=200, content_type='application/json', body=json.dumps({'results': [{'status': 200}]})))
+            clean.route('**/api/session-health', lambda route: route.fulfill(json={'results': [{'status': 200, 'usage': {'planType': ' FrEe '}}]}))
             clean.goto(page.url)
             clean.locator('#open-cpa-push-config').click()
             clean.locator('#cpa-base-url').fill(remote_url)
@@ -355,14 +392,20 @@ def exercise_push(page, login_plans):
             expect(clean.locator('#cpa-config-status')).to_contain_text('已加密保存')
             clean.keyboard.press('Escape')
             clean.locator('input[name="push-target"][value="cpa"]').check()
-            clean.locator('#session-input').fill(json.dumps(session))
+            clean.locator('#session-input').fill(json.dumps({**session, 'plan_type': 'plus'}))
+            expect(clean.locator('#converter-free-count')).to_have_text('（1）')
+            expect(clean.locator('#push-converted')).to_be_disabled()
+            assert not pending
+            clean.locator('#converter-skip-free').uncheck()
             clean.locator('#push-converted').click()
             expect(clean.locator('#push-status')).to_contain_text('正在推送')
+            expect(clean.locator('#converter-skip-free')).to_be_disabled()
             clean.locator('#clear-login-data').click()
             expect(clean.locator('#browser-storage-status')).to_contain_text('登录数据已清空，配置已保留')
             for route in pending:
                 route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'imported': 1, 'results': [{'name': 'stale', 'status': 'success'}]}))
             expect(clean.locator('input[name="push-target"][value="cpa"]')).to_be_enabled()
+            expect(clean.locator('#converter-skip-free')).not_to_be_checked()
             expect(clean.locator('#push-feedback')).to_be_hidden()
             expect(clean.locator('#session-input')).to_have_value('')
             saved = clean.evaluate('async () => JSON.stringify(await browserWorkspace.read())')
@@ -370,6 +413,7 @@ def exercise_push(page, login_plans):
             clean.once("dialog", lambda dialog: dialog.accept())
             clean.locator('#clear-browser-data').click()
             expect(clean.locator('#browser-storage-status')).to_contain_text('所有数据已清空')
+            expect(clean.locator('#converter-skip-free')).to_be_checked()
             assert 'fixture-cpa-key' not in clean.evaluate('async () => JSON.stringify((await browserWorkspace.read()) || {})')
         finally:
             fresh.close()
@@ -462,6 +506,7 @@ def exercise_clear_login(source):
         expect(peer.locator('#start-protocol-login')).to_be_disabled()
         expect(page.locator('#start-protocol-login')).to_be_enabled()
         for check_page in [page, peer]:
+            expect(check_page.locator('#converter-skip-free')).not_to_be_checked()
             expect(check_page.locator('#login-proxy-pool')).to_have_value('custom.example:3000:fixture:password')
             expect(check_page.locator('#login-proxy-local-port')).to_have_value('8899')
             expect(check_page.locator('#cpa-management-key')).to_have_value('fixture-cpa-key')
@@ -477,6 +522,7 @@ def exercise_clear_login(source):
         assert saved['state']['browserSettings']['sub2apiSettings']['groupIds'] == [7]
         assert saved['state']['cpaSettings']['managementKey'] == 'fixture-cpa-key'
         page.reload()
+        expect(page.locator('#converter-skip-free')).not_to_be_checked()
         expect(page.locator('#login-accounts')).to_have_value('')
         expect(page.locator('#session-input')).to_have_value('')
         expect(page.locator('#export-login-personal')).to_be_disabled()
@@ -489,6 +535,7 @@ def exercise_clear_login(source):
         page.once("dialog", lambda dialog: dialog.accept())
         page.locator('#clear-browser-data').click()
         expect(page.locator('#browser-storage-status')).to_have_text('所有数据已清空')
+        expect(page.locator('#converter-skip-free')).to_be_checked()
         expect(page.locator('#login-proxy-pool')).to_have_value('')
         expect(page.locator('#login-sub2-admin-key')).to_have_value('')
         expect(page.locator('#cpa-management-key')).to_have_value('')

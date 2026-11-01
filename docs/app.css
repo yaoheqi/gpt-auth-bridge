@@ -1265,6 +1265,10 @@ label:has(#login-push-sub2-only) { display: none !important; }
 .push-target input { margin: 0; accent-color: var(--accent); }
 .push-config-actions { display: flex; gap: 6px; }
 .push-controls .button { flex: 0 0 auto; width: auto; min-height: 32px; padding: 6px 9px; font-size: .78rem; white-space: nowrap; }
+.converter-free-filter { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.converter-free-filter:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.converter-free-filter:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.converter-free-filter input { width: 14px; height: 14px; margin: 0; padding: 0; accent-color: var(--accent); }
 .push-feedback { margin-top: 10px; }
 .push-feedback[hidden] { display: none; }
 .push-toast {

@@ -167,7 +167,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     retained.loginProgress = [];
     const ids = new Set(['login-proxy-local-port', 'login-proxy-pool', 'sub2api-models', 'sub2api-concurrency',
       'sub2api-load-factor', 'sub2api-priority', 'sub2api-fingerprint-mode', 'download-scope', 'health-filter',
-      'usage-filter', 'sub2api-operation', 'split-scope']);
+      'usage-filter', 'sub2api-operation', 'split-scope', 'converter-skip-free']);
     const names = new Set(['push-target', 'login-proxy-mode', 'login-workspace-mode', 'session-monitor']);
     const fields = browserFields().filter(field => ids.has(field.id) || names.has(field.name)
       || (field.id && document.getElementById(field.id)?.closest('.push-config')));
@@ -262,6 +262,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     pushControls: document.querySelector('#push-controls'),
     pushTarget: document.querySelector('#push-target'),
     pushConverted: document.querySelector('#push-converted'),
+    converterSkipFree: document.querySelector('#converter-skip-free'),
+    converterFreeFilter: document.querySelector('#converter-free-filter'),
+    converterFreeCount: document.querySelector('#converter-free-count'),
     retryPush: document.querySelector('#retry-push'),
     reconcilePush: document.querySelector('#reconcile-push'),
     pushOperationHistory: document.querySelector('#push-operation-history'),
@@ -1614,6 +1617,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     return { email: item.cpa.email, accessToken: item.cpa.access_token, accountId: item.cpa.account_id };
   }
 
+  function convertedPlanType(item) {
+    const key = healthCredentialKey(convertedHealthAccount(item));
+    const health = freshHealth.has(key) ? sharedHealth.get(key) : null;
+    return String(firstNonEmpty(health?.usage?.planType, item.cpa.plan_type) || '').trim().toLowerCase();
+  }
+
   function toolHealthAccount(record) {
     if (record.healthAccount) return record.healthAccount;
     const account = record.account;
@@ -1630,11 +1639,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       return result ? { ...result, index } : null;
     });
     state.health = results.every(Boolean) ? results : [];
-    const testAccounts = converted.map((account, index) => {
-      const key = healthCredentialKey(account);
-      const health = freshHealth.has(key) ? sharedHealth.get(key) : null;
-      return { ...account, planType: firstNonEmpty(health?.usage?.planType, state.converted[index].cpa.plan_type) };
-    });
+    const testAccounts = converted.map((account, index) => ({ ...account, planType: convertedPlanType(state.converted[index]) }));
     const isFree = account => String(account.planType || '').trim().toLowerCase() === 'free';
     const healthy = testAccounts.filter(account => freshHealth.has(healthCredentialKey(account)) && sharedHealth.get(healthCredentialKey(account))?.status === 200);
     evaluationEligibility = { total: converted.length,
@@ -2516,6 +2521,15 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     return elements.pushTarget.querySelector('input:checked')?.value || 'none';
   }
 
+  function convertedPushSelection() {
+    const selected = selectedConverted();
+    const accounts = elements.converterSkipFree.checked
+      ? selected.filter(item => convertedPlanType(item) !== 'free') : selected;
+    return { accounts, skippedFree: selected.length - accounts.length };
+  }
+
+  let converterFilterSaving = false;
+
   function normalizePushAddress(value, target) {
     const raw = String(value || '').trim();
     if (!raw) throw new Error('请填写服务地址');
@@ -2546,7 +2560,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (elements.pushFeedback.parentElement !== feedbackSlot) feedbackSlot.append(elements.pushFeedback);
     elements.pushControls.classList.toggle('hidden', state.format === 'sub2api-tools');
     elements.pushConverted.classList.toggle('hidden', login || target === 'none' || state.format === 'sub2api-tools');
-    elements.pushConverted.disabled = pushBusy || monitorBusy || target === 'none' || !selectedConverted().length;
+    const selection = convertedPushSelection();
+    elements.converterFreeFilter.classList.toggle('hidden', login || state.format === 'sub2api-tools');
+    elements.converterSkipFree.disabled = pushBusy || monitorBusy || converterFilterSaving;
+    elements.converterFreeCount.textContent = converterFilterSaving ? '保存中…' : selection.skippedFree ? `（${selection.skippedFree}）` : '';
+    elements.pushConverted.disabled = pushBusy || monitorBusy || converterFilterSaving || target === 'none' || !selection.accounts.length;
+    elements.pushConverted.title = selection.skippedFree ? `已跳过 ${selection.skippedFree} 个 free 账号，可推送 ${selection.accounts.length} 个账号` : '';
     elements.retryPush.classList.toggle('hidden', !state.pushRetry?.accounts?.length);
     elements.retryPush.disabled = pushBusy || monitorBusy || !state.pushRetry?.accounts?.length || state.pushRetry.target !== target;
     const operation = activePushOperation();
@@ -2557,7 +2576,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     for (const radio of elements.pushTarget.querySelectorAll('input')) radio.disabled = pushBusy || monitorBusy;
     elements.pushHint.textContent = login
       ? '选择目标并保存配置后，获取全部工作区 RT 时自动推送非 free 账号；手动下载包含所有类型。配置加密保存在当前浏览器。'
-      : '配置加密保存在当前浏览器。推送范围沿用下载范围，格式由推送目标决定。';
+      : `配置加密保存在当前浏览器。推送范围沿用下载范围，格式由推送目标决定。${elements.converterSkipFree.checked ? `已开启跳过 free，本次跳过 ${selection.skippedFree} 个账号。` : '已允许推送 free 账号。'}`;
   }
 
   function renderPushResults() {
@@ -4106,7 +4125,23 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     persistBrowserWorkspace();
     scheduleSessionMonitor();
   });
-  elements.pushConverted?.addEventListener('click', () => runPush(async target => selectedConverted().map(item => target === 'cpa' ? item.cpa : applySub2apiOutputConfig(item.sub2apiAccount))));
+  elements.converterSkipFree?.addEventListener('change', async () => {
+    const isCurrent = workspaceTaskIsCurrent();
+    const previous = !elements.converterSkipFree.checked;
+    converterFilterSaving = true;
+    updatePushControls();
+    try { await persistBrowserWorkspace(true, true); }
+    catch (error) {
+      if (isCurrent()) {
+        elements.converterSkipFree.checked = previous;
+        setStatus(elements.pushStatus, `推送筛选设置保存失败：${error.message}`, 'error');
+      }
+    } finally {
+      if (isCurrent()) { converterFilterSaving = false; updatePushControls(); }
+    }
+  });
+  elements.pushConverted?.addEventListener('click', () => runPush(async target => convertedPushSelection().accounts.map(item => target === 'cpa' ? item.cpa : applySub2apiOutputConfig(item.sub2apiAccount)),
+    { emptyMessage: '当前范围没有可推送的账号；已按设置跳过 free 账号。' }));
   elements.retryPush?.addEventListener('click', () => runPush(async () => state.pushRetry?.accounts || [], { retry: true, upsert: state.pushRetry?.upsert === true }));
   elements.reconcilePush?.addEventListener('click', reconcilePushOperation);
   elements.pushOperationHistory?.addEventListener('change', () => {
@@ -4331,6 +4366,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       teamCheckout.reset();
       modelEvaluation.reset();
       pushBusy = false;
+      converterFilterSaving = false;
       const format = state.format;
       Object.assign(state, createWorkspaceState(), { format }, retained?.state, { loginProgress: new Map() });
       initialControls.forEach(({ node, value, checked, disabled, type }) => {

@@ -277,6 +277,9 @@
                   <label><input type="radio" name="session-monitor" value="on" />开启</label>
                 </fieldset>
               </div>
+              <label class="button button-secondary converter-free-filter" id="converter-free-filter" title="仅影响格式转换的新推送；取消勾选可推送 free 账号，下载范围保持不变。">
+                <input id="converter-skip-free" type="checkbox" checked />跳过 free<span id="converter-free-count" aria-hidden="true"></span>
+              </label>
               <div class="push-choice-controls">
                 <span class="push-label" aria-hidden="true">推送</span>
                 <fieldset id="push-target" class="push-target">
