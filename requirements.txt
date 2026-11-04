@@ -1,9 +1,10 @@
 # Exact direct and transitive versions; update together after browser/network regression checks.
-certifi==2026.7.22
+certifi==2026.10.23
 cffi==2.1.1
-curl_cffi==0.16.3
+curl_cffi==0.17.0
 greenlet==3.5.6
-playwright==1.62.0
-pycparser==3.0
+playwright==1.64.1
+pycparser==3.12
+# pyee 14 needs Python 3.12; keep the version supported by the Python 3.11 container.
 pyee==13.0.1
 typing_extensions==4.16.0
