@@ -19,9 +19,9 @@
   "dependencies": {
     "express": "4.22.3",
     "fetch-cookie": "^3.2.0",
-    "markdown-it": "14.1.0",
+    "markdown-it": "14.3.3",
     "proxy-chain": "^3.0.1",
     "tough-cookie": "6.0.2",
-    "undici": "8.10.2"
+    "undici": "8.12.3"
   }
 }
