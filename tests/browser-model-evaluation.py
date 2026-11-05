@@ -21,6 +21,7 @@ HTML = HTML.replace('<body>', '<body><style>@keyframes pulse{to{opacity:.4}} #cs
 def main():
     release = threading.Event()
     upstream_requests = []
+    candy_answer = '21'
 
     class Upstream(BaseHTTPRequestHandler):
         def handle(self):
@@ -47,7 +48,7 @@ def main():
                 self.wfile.flush()
 
             try:
-                text = PARTIAL if pelican else '推理过程\n答案：21'
+                text = PARTIAL if pelican else f'推理过程\n答案：{candy_answer}'
                 send({'choices': [{'index': 0, 'delta': {'content': text}}]} if chat else {'type': 'response.output_text.delta', 'delta': text})
                 if pelican:
                     release.wait(20)
@@ -55,7 +56,8 @@ def main():
                 if chat:
                     send({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': {'completion_tokens': 88}})
                 else:
-                    send({'type': 'response.completed', 'response': {'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': HTML if pelican else text}]}], 'usage': {'output_tokens': 88}}})
+                    # Candy providers may omit repeated text after already streaming the full answer.
+                    send({'type': 'response.completed', 'response': {'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': HTML}]}] if pelican else [], 'usage': {'output_tokens': 88}}})
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
@@ -205,6 +207,26 @@ def main():
                 page.screenshot(path=str(output / 'completed-desktop.png'), full_page=True)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
 
+                page.locator('#evaluation-task-select').select_option('0')
+                expect(page.locator('#evaluation-case-status')).to_have_text('答案正确（21）')
+                expect(page.locator('#evaluation-case-error')).to_be_hidden()
+                expect(page.locator('#evaluation-output')).to_contain_text('答案：21')
+                expect(page.locator('#evaluation-output-note')).not_to_contain_text('部分内容')
+                expect(page.locator('#evaluation-status')).to_contain_text('请求失败 0')
+
+                candy_answer = '29'
+                page.locator('#evaluation-include-pelican').uncheck()
+                start.click()
+                expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
+                expect(page.locator('#evaluation-case-status')).to_have_text('答案错误')
+                expect(page.locator('#evaluation-case-error')).to_be_hidden()
+                expect(page.locator('#evaluation-output')).to_contain_text('答案：29')
+                expect(page.locator('#evaluation-output-note')).not_to_contain_text('部分内容')
+                expect(page.locator('#evaluation-status')).to_contain_text('答案错误 1')
+                expect(page.locator('#evaluation-status')).to_contain_text('请求失败 0')
+
+                candy_answer = '21'
+                page.locator('#evaluation-include-pelican').check()
                 page.locator('#evaluation-protocol').select_option('chat')
                 release.clear()
                 start.click()

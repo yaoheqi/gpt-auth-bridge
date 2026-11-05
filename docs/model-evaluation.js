@@ -288,7 +288,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
           job.account = null; updateJob(job);
         });
         const count = state => jobs.filter(job => job.status === state).length;
-        status.textContent = `${current.signal.aborted ? '已停止' : '测试完成'}：答案正确 ${count('passed')}，待评审 ${count('manual_review')}，失败 ${count('error') + count('wrong_answer') + count('invalid_format')}${count('cancelled') ? `，已停止 ${count('cancelled')}` : ''}。`;
+        status.textContent = `${current.signal.aborted ? '已停止' : '测试完成'}：答案正确 ${count('passed')}，答案错误 ${count('wrong_answer')}，格式不完整 ${count('invalid_format')}，待评审 ${count('manual_review')}，请求失败 ${count('error')}${count('cancelled') ? `，已停止 ${count('cancelled')}` : ''}。`;
         controller = null; refresh(); renderSelected(true);
       }
     }
