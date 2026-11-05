@@ -5,6 +5,7 @@ import { readEvaluationEvents } from '../docs/evaluation-stream.js';
 
 const account = { accessToken: 'fixture-token', accountId: 'workspace-one' };
 const completed = output => ({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: output }] }] });
+const sse = events => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
 
 test('evaluation forwards chosen model and workspace to the fixed endpoint', async () => {
   for (const model of ['gpt-6-astra', 'custom-model']) {
@@ -112,6 +113,73 @@ test('Responses emits partial text before completion and records first output/us
   assert.equal(result.status, 'manual_review');
   assert.equal(result.output, '<html><svg>鹈鹕</svg></html>');
   assert.equal(result.outputTokens, 32);
+});
+
+test('Responses grades streamed answers when a successful completion omits the text', async () => {
+  const bodies = [{ account, question: 'candy' },
+    { api: { baseUrl: 'https://example.com', key: 'fixture', protocol: 'responses' }, question: 'candy' }];
+  for (const body of bodies) {
+    for (const type of ['response.completed', 'response.done']) {
+      for (const snapshot of [{}, { output: [] }, completed(' \n'), { output: [{ type: 'reasoning', summary: [] }] }]) {
+        for (const [answer, status] of [['21', 'passed'], ['29', 'wrong_answer']]) {
+          const deltas = ['先按形状分析。\n', `答案：${answer}`];
+          const stream = sse([
+            ...deltas.map(delta => ({ type: 'response.output_text.delta', delta })),
+            { type, response: { ...snapshot, status: 'completed', usage: { output_tokens: 88 } } },
+          ]);
+          const emitted = [];
+          const result = await evaluateModel(body, {
+            fetchImpl: async () => new Response(stream), onEvent: event => emitted.push(event),
+          });
+          assert.equal(result.status, status);
+          assert.equal(result.answer, answer);
+          assert.equal(result.output, deltas.join(''));
+          assert.equal(result.outputChars, result.output.length);
+          assert.equal(result.outputTokens, 88);
+          assert.ok(result.firstTokenMs >= 0);
+          assert.deepEqual(emitted.filter(event => event.type === 'delta').map(event => event.delta), deltas);
+          assert.equal(parseEvaluationResponse(stream), result.output);
+        }
+      }
+    }
+  }
+});
+
+test('Responses prefers final text to streamed drafts and can use top-level output_text', async () => {
+  for (const snapshot of [completed('答案：29'), { ...completed(' \n'), output_text: '答案：29' }]) {
+    const stream = sse([
+      { type: 'response.output_text.delta', delta: '答案：21' },
+      { type: 'response.completed', response: snapshot },
+    ]);
+    const result = await evaluateModel({ account, question: 'candy' }, { fetchImpl: async () => new Response(stream) });
+    assert.equal(result.output, '答案：29');
+    assert.equal(result.status, 'wrong_answer');
+    assert.equal(parseEvaluationResponse(stream), '答案：29');
+  }
+});
+
+test('Responses never grades partial text without a successful completion', async () => {
+  const endings = [[], [{ type: 'done' }], [{ type: 'response.completed' }],
+    ...['error', 'response.failed', 'response.incomplete', 'response.cancelled'].map(type => [{ type }]),
+    ...['in_progress', 'failed', 'incomplete', 'cancelled'].map(status => [{ type: 'response.done', response: { status } }]),
+    [{ type: 'response.completed', response: { status: 'completed', error: { message: 'fixture failure' } } }]];
+  for (const ending of endings) {
+    const stream = sse([{ type: 'response.output_text.delta', delta: '答案：21' }, ...ending]);
+    const emitted = [];
+    await assert.rejects(evaluateModel({ account, question: 'candy' }, {
+      fetchImpl: async () => new Response(stream), onEvent: event => emitted.push(event),
+    }), /模型.*(?:未完成|不完整)/);
+    assert.equal(emitted.find(event => event.type === 'delta').delta, '答案：21');
+    assert.throws(() => parseEvaluationResponse(stream), /模型.*(?:未完成|不完整)/);
+  }
+});
+
+test('Responses reports no text only when both the completed response and stream are empty', async () => {
+  const stream = sse([{ type: 'response.completed', response: { status: 'completed', output: [] } }]);
+  await assert.rejects(evaluateModel({ account, question: 'candy' }, {
+    fetchImpl: async () => new Response(stream),
+  }), { message: '模型未返回文本' });
+  assert.throws(() => parseEvaluationResponse(stream), { message: '模型未返回文本' });
 });
 
 test('Chat streaming requires a stop finish and retains emitted partial content on failure', async () => {

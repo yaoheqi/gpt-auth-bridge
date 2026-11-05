@@ -35,6 +35,17 @@ export function validateEvaluation(body = {}) {
   return { account, question, model, endpoint: 'https://chatgpt.com/backend-api/codex/responses', key: account.accessToken.trim(), protocol: 'responses' };
 }
 
+function completedEvaluationText(response, streamedOutput = '') {
+  if (!response || response.error || response.status && response.status !== 'completed') throw new Error('模型响应未完成');
+  const content = (response.output || []).flatMap(item => item.type === 'message' ? item.content || [] : [])
+    .filter(item => item.type === 'output_text').map(item => item.text || '').join('');
+  // Some providers only send status/usage at completion; the deltas already contain the answer.
+  const output = [content, response.output_text, streamedOutput].find(text => typeof text === 'string' && text.trim());
+  if (!output) throw new Error('模型未返回文本');
+  if (output.length > 256 * 1024) throw new Error('模型输出过大');
+  return output;
+}
+
 export function parseEvaluationResponse(text) {
   let completed;
   let deltas = '';
@@ -46,16 +57,12 @@ export function parseEvaluationResponse(text) {
       const data = line.slice(5).trim();
       if (!data || data === '[DONE]') continue;
       const event = JSON.parse(data);
-      if (['error', 'response.failed', 'response.incomplete'].includes(event.type)) throw new Error('模型返回失败或不完整的结果');
+      if (event.error || ['error', 'response.failed', 'response.incomplete', 'response.cancelled'].includes(event.type)) throw new Error('模型返回失败或不完整的结果');
       if (event.type === 'response.output_text.delta') deltas += event.delta || '';
-      if (event.type === 'response.completed') completed = event.response;
+      if (['response.completed', 'response.done'].includes(event.type)) completed = event.response;
     }
   }
-  if (!completed || completed.error || completed.status && completed.status !== 'completed') throw new Error('模型响应未完成');
-  const output = (completed.output || []).flatMap(item => item.type === 'message' ? item.content || [] : [])
-    .filter(item => item.type === 'output_text').map(item => item.text || '').join('') || completed.output_text || deltas;
-  if (!output.trim()) throw new Error('模型未返回文本');
-  return output;
+  return completedEvaluationText(completed, deltas);
 }
 
 export function gradeEvaluation(question, output) {
@@ -109,7 +116,7 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
         if (event.error || ['error', 'response.failed', 'response.incomplete', 'response.cancelled'].includes(event.type)) throw new Error('模型返回失败或不完整的结果');
         if (event.type === 'response.output_text.delta') append(event.delta);
         if (['response.completed', 'response.done'].includes(event.type)) {
-          const canonical = parseEvaluationResponse(JSON.stringify(event.response));
+          const canonical = completedEvaluationText(event.response, output);
           if (!output) append(canonical);
           output = canonical;
           completed = true;
@@ -126,7 +133,8 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
         }
       });
     }
-    if (!completed || !output.trim()) throw new Error('模型响应未完成');
+    if (!completed) throw new Error('模型响应未完成');
+    if (!output.trim()) throw new Error('模型未返回文本');
     return { model, question, output, ...gradeEvaluation(question, output), firstTokenMs,
       outputChars: output.length, outputTokens: usage?.output_tokens ?? usage?.completion_tokens ?? null, durationMs: Date.now() - started };
   };
