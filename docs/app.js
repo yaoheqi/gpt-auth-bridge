@@ -277,6 +277,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     converterPushSlot: document.querySelector('#converter-push-slot'),
     loginPushFeedbackSlot: document.querySelector('#login-push-feedback-slot'),
     converterPushFeedbackSlot: document.querySelector('#converter-push-feedback-slot'),
+    evaluationPushFeedbackSlot: document.querySelector('#evaluation-push-feedback-slot'),
     formatToolbar: document.querySelector('#format-toolbar'),
     pushResults: document.querySelector('#push-results'),
     pushResultDetails: document.querySelector('#push-result-details'),
@@ -2580,6 +2581,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     return elements.pushTarget.querySelector('input:checked')?.value || 'none';
   }
 
+  function pushFeedbackTarget() {
+    return state.format === 'model-evaluation' ? 'sub2api' : selectedPushTarget();
+  }
+
   function convertedPushSelection() {
     return { accounts: selectedConverted(), skippedFree: state.converted.filter(skipFreeConverted).length };
   }
@@ -2608,10 +2613,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function updatePushControls() {
-    const target = selectedPushTarget();
+    const target = pushFeedbackTarget();
     const login = state.format === 'protocol-login';
     const slot = login ? elements.loginPushSlot : elements.converterPushSlot;
-    const feedbackSlot = login ? elements.loginPushFeedbackSlot : elements.converterPushFeedbackSlot;
+    const feedbackSlot = state.format === 'model-evaluation' ? elements.evaluationPushFeedbackSlot
+      : login ? elements.loginPushFeedbackSlot : elements.converterPushFeedbackSlot;
     if (elements.pushControls.parentElement !== slot) slot.append(elements.pushControls);
     if (elements.pushFeedback.parentElement !== feedbackSlot) feedbackSlot.append(elements.pushFeedback);
     elements.pushControls.classList.toggle('hidden', state.format === 'sub2api-tools');
@@ -2633,6 +2639,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     elements.pushHint.textContent = login
       ? '选择目标并保存配置后，获取全部工作区 RT 时自动推送非 free 账号；手动下载包含所有类型。配置加密保存在当前浏览器。'
       : `配置加密保存在当前浏览器。推送范围沿用下载范围，格式由推送目标决定。${elements.converterSkipFree.checked ? `测活、展示、转换和推送均跳过 free，当前跳过 ${selection.skippedFree} 个账号。` : '已允许测活、展示、转换和推送 free 账号。'}`;
+    modelEvaluation.refresh();
   }
 
   function renderPushResults() {
@@ -2751,7 +2758,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (!operation) return;
     const isCurrent = workspaceTaskIsCurrent();
     try {
-      const target = selectedPushTarget();
+      const target = pushFeedbackTarget();
       const settings = pushSettings(target);
       requirePushOperationSettings(operation, settings, target);
       const items = operation.items.filter(item => item.account && !item.disabled && (item.status === 'unknown' || (item.status === 'failed' && !item.retryable)));
@@ -2776,12 +2783,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
   }
 
-  async function runPush(buildAccounts, { retry = false, emptyMessage = '', upsert = false, signal } = {}) {
+  async function runPush(buildAccounts, { retry = false, emptyMessage = '', upsert = false, signal, target = selectedPushTarget() } = {}) {
     if (pushBusy || (monitorBusy && !signal)) return;
     hidePushToast();
     const isCurrent = workspaceTaskIsCurrent(signal);
     const ownsWorkspace = workspaceTaskIsCurrent();
-    const target = selectedPushTarget();
     let accounts;
     let operation;
     let items = [];
@@ -4053,6 +4059,20 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     request: pageFetch, isWorkspaceCurrent: workspaceTaskIsCurrent, getHeaders: loginProxyHeaders,
     getEligibility: () => evaluationEligibility,
     getConcurrency: () => taskConcurrency,
+    isPushBusy: () => pushBusy || monitorBusy,
+    onPushPassed: async accounts => {
+      try { pushSettings('sub2api'); }
+      catch (error) {
+        openSub2PushConfig();
+        setStatus(elements.loginSub2Status, `${error.message}，保存后再点击推送。`, 'error');
+        return;
+      }
+      const keys = new Set(accounts.map(healthCredentialKey));
+      return runPush(async () => state.converted
+        .filter(item => keys.has(healthCredentialKey(convertedHealthAccount(item))))
+        .map(item => applySub2apiOutputConfig(item.sub2apiAccount)),
+      { target: 'sub2api', emptyMessage: '没有可推送的答案正确账号，请重新测试。' });
+    },
     onImport: text => {
       const sources = parseInputDocuments(text);
       const valid = sources.filter(item => { try { convertSession(item.value); return true; } catch { return false; } });
@@ -4199,18 +4219,20 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   });
   elements.pushConverted?.addEventListener('click', () => runPush(async target => convertedPushSelection().accounts.map(item => target === 'cpa' ? item.cpa : applySub2apiOutputConfig(item.sub2apiAccount)),
     { emptyMessage: '当前范围没有可推送的账号；已按设置跳过 free 账号。' }));
-  elements.retryPush?.addEventListener('click', () => runPush(async () => state.pushRetry?.accounts || [], { retry: true, upsert: state.pushRetry?.upsert === true }));
+  elements.retryPush?.addEventListener('click', () => runPush(async () => state.pushRetry?.accounts || [], { retry: true, upsert: state.pushRetry?.upsert === true, target: pushFeedbackTarget() }));
   elements.reconcilePush?.addEventListener('click', reconcilePushOperation);
   elements.pushOperationHistory?.addEventListener('change', () => {
     state.activePushOperationId = elements.pushOperationHistory.value;
     renderPushResults();
     persistBrowserWorkspace();
   });
-  document.querySelector('#open-sub2-push-config')?.addEventListener('click', () => {
+  function openSub2PushConfig() {
     void loadLoginSub2Config();
     void loadLoginSub2Proxies({ silent: true });
     elements.sub2PushDialog.showModal();
-  });
+  }
+  document.querySelector('#open-sub2-push-config')?.addEventListener('click', openSub2PushConfig);
+  document.querySelector('#evaluation-sub2-config')?.addEventListener('click', openSub2PushConfig);
   document.querySelector('#open-cpa-push-config')?.addEventListener('click', () => {
     elements.cpaBaseUrl.value = state.cpaSettings.baseUrl || '';
     elements.cpaManagementKey.value = state.cpaSettings.managementKey || '';

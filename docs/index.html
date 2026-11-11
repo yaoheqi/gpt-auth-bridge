@@ -106,7 +106,10 @@
       <section class="evaluation-workbench hidden" id="model-evaluation" aria-labelledby="model-evaluation-title">
         <header class="evaluation-heading">
           <div><h1 id="model-evaluation-title">模型测试</h1><p>从一道推理题，到一段会动的画面。实时查看模型的生成过程。</p></div>
-          <span class="evaluation-live-label"><span aria-hidden="true"></span>流式输出与实时预览</span>
+          <div class="evaluation-heading-actions">
+            <button class="button button-secondary" id="evaluation-sub2-config" type="button">Sub2API 配置</button>
+            <button class="button button-primary" id="evaluation-push-passed" type="button" title="仅推送本轮糖果题答案正确且当前测活通过的账号" disabled>推送答案正确账号到 Sub2API（0）</button>
+          </div>
         </header>
         <div class="evaluation-layout">
           <aside class="evaluation-sidebar" aria-label="测试配置与队列">
@@ -140,6 +143,7 @@
             <div data-evaluation-results class="evaluation-queue"><p class="evaluation-queue-empty">开始后，点击任务查看生成过程。</p></div>
           </aside>
           <div class="evaluation-stage">
+            <div id="evaluation-push-feedback-slot"></div>
             <section class="evaluation-run-status" aria-label="本轮进度">
               <div><p role="status" aria-live="polite" id="evaluation-status">准备就绪，选择测试来源后开始。</p><span id="evaluation-progress-count">0 / 0</span></div>
               <progress id="evaluation-progress" max="1" value="0" aria-label="测试完成进度"></progress>

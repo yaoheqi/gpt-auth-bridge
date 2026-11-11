@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import urlopen
 from playwright.sync_api import sync_playwright, expect
+from browser_evaluation_push import check_evaluation_push
 
 ROOT = Path(__file__).resolve().parents[1]
 PARTIAL = '<html><body><svg width="1024" height="768" viewBox="0 0 1024 768"><rect width="1024" height="768" fill="#edf5f8"/><text x="72" y="100" font-size="30" fill="#24505a">Pelican in motion</text><g stroke="#24505a" stroke-width="8" fill="none"><circle cx="320" cy="540" r="100"/><circle cx="700" cy="540" r="100"/><path d="M320 540 440 340 550 540H320m120-200 260 200-80-260h-70"/></g>'
@@ -85,6 +86,7 @@ def main():
                 raise RuntimeError('startup timed out')
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
+                check_evaluation_push(browser, url)
                 page = browser.new_page(viewport={'width': 1440, 'height': 1100})
                 errors, requests = [], []
                 page.on('pageerror', lambda error: errors.append(str(error)))
@@ -281,6 +283,7 @@ def main():
                         break
                     page.wait_for_timeout(50)
                 assert len(pending) == 10, len(pending)
+                expect(page.locator('#evaluation-push-passed')).to_be_disabled()
                 page.wait_for_timeout(200)
                 assert len(pending) == 10
                 assert all(route.request.post_data_json['question'] == 'candy' for route in pending)
@@ -290,8 +293,11 @@ def main():
                         break
                     page.wait_for_timeout(50)
                 assert len(pending) == 11
+                expect(page.locator('#evaluation-push-passed')).to_be_disabled()
                 panel.locator('[data-evaluation-stop]').click()
                 expect(page.locator('#evaluation-status')).to_contain_text('已停止')
+                expect(page.locator('#evaluation-push-passed')).to_be_enabled()
+                expect(page.locator('#evaluation-push-passed')).to_contain_text('（1）')
                 for route in pending[1:]:
                     route.abort()
                 # A healthy free-only import must disable testing, including programmatic submit.

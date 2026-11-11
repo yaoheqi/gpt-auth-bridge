@@ -1,12 +1,14 @@
 import { readEvaluationEvents } from './evaluation-stream.js';
 import { evaluationPreviewDocument } from './evaluation-preview.js';
+import { healthCredentialKey } from './account-workspace.js';
 
 const TITLES = { candy: '糖果题', pelican: '鹈鹕骑自行车' };
 const STATUS = { queued: '排队中', connecting: '连接模型', waiting: '等待首字', generating: '生成中', passed: '答案正确（21）', wrong_answer: '答案错误', invalid_format: '格式不完整', manual_review: '待人工评审', error: '请求失败', cancelled: '已停止' };
 const ACTIVE = ['queued', 'connecting', 'waiting', 'generating'];
 const seconds = ms => ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`;
 
-export function initializeModelEvaluation({ request, getEligibility, getHeaders, isWorkspaceCurrent, onImport, getConcurrency }) {
+export function initializeModelEvaluation({ request, getEligibility, getHeaders, isWorkspaceCurrent, onImport, getConcurrency,
+  onPushPassed, isPushBusy = () => false }) {
   const panel = document.querySelector('#model-evaluation');
   if (!panel) return { reset() {}, refresh() {} };
   const find = id => panel.querySelector(`#evaluation-${id}`);
@@ -34,6 +36,13 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   observer.observe(largeFrame.parentElement);
   observer.observe(document.querySelector('.topbar'));
 
+  function passedAccounts() {
+    if (mode() !== 'accounts') return [];
+    const passed = new Set(jobs.filter(job => job.question === 'candy' && job.status === 'passed').map(job => job.credentialKey));
+    return [...new Map(getEligibility().accounts.filter(account => passed.has(healthCredentialKey(account)))
+      .map(account => [healthCredentialKey(account), account])).values()];
+  }
+
   function refresh() {
     const eligibility = getEligibility();
     find('account-count').textContent = eligibility.pending ? `正在测活 ${eligibility.total} 个账号…`
@@ -47,6 +56,11 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     const concurrency = getConcurrency();
     find('concurrency').textContent = Number.isInteger(concurrency) ? `服务端并发：${concurrency}` : '正在加载服务端并发配置';
     if (!Number.isInteger(concurrency) || concurrency < 1) start.disabled = true;
+    const passedCount = passedAccounts().length;
+    const pushing = isPushBusy();
+    find('push-passed').disabled = Boolean(controller) || importing || pushing || !passedCount;
+    find('push-passed').textContent = `推送答案正确账号到 Sub2API（${passedCount}）`;
+    find('sub2-config').disabled = pushing;
   }
 
   function chooseView(view) {
@@ -208,6 +222,13 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   find('close-preview').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => largeFrame.removeAttribute('srcdoc'));
   stop.addEventListener('click', () => { controller?.abort(); stop.disabled = true; status.textContent = '正在停止，保留已生成内容…'; });
+  find('push-passed').addEventListener('click', async () => {
+    if (controller || importing || isPushBusy()) return;
+    const accounts = passedAccounts();
+    if (!accounts.length) return;
+    await onPushPassed(accounts);
+    refresh();
+  });
 
   find('form').addEventListener('submit', async event => {
     event.preventDefault(); if (controller) return;
@@ -235,7 +256,8 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
       const target = document.createElement('small'); target.textContent = label; target.title = label;
       const stateLabel = document.createElement('span'); stateLabel.className = 'evaluation-task-status'; stateLabel.textContent = '排队中';
       button.append(title, target, stateLabel); results.append(button);
-      return { account, question, label, model: chosenModel, status: 'queued', output: '', firstTokenMs: null, button, stateLabel };
+      return { account, credentialKey: account ? healthCredentialKey(account) : '', question, label,
+        model: chosenModel, status: 'queued', output: '', firstTokenMs: null, button, stateLabel };
     }));
     find('task-select').replaceChildren(); find('task-select').hidden = false;
     jobs.forEach((job, index) => {
