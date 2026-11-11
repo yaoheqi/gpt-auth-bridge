@@ -99,6 +99,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   let evaluationEligibility = { accounts: [], total: 0, pending: false };
   const sharedHealth = new Map();
   const freshHealth = new Set();
+  const knownHealthPlans = new Map();
 
   let browserStorageReady = false;
   let browserStorageAvailable = false;
@@ -1341,7 +1342,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   function canLogoutAllSessions() {
     return state.format === "sub2api"
       && healthComplete()
-      && state.health.some((item) => item?.status === 200)
+      && state.converted.some((item, index) => !skipFreeConverted(item) && state.health[index]?.status === 200)
       && !state.logoutInProgress;
   }
 
@@ -1372,7 +1373,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (!canLogoutAllSessions()) return;
     const accounts = state.converted
       .map((item, index) => ({ item, result: state.health[index], index }))
-      .filter(({ result }) => result?.status === 200)
+      .filter(({ item, result }) => !skipFreeConverted(item) && result?.status === 200)
       .map(({ item, index }) => ({
         index,
         email: item.email || item.name || `account-${index + 1}`,
@@ -1465,7 +1466,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function hasToolUsageSnapshots() {
-    return state.toolRecords.some((record, index) => Boolean(recordUsage(record, state.health[index])));
+    return state.toolRecords.some((record, index) => !skipFreeToolRecord(record) && Boolean(recordUsage(record, state.health[index])));
   }
 
   function usageMatchesFilter(record, result) {
@@ -1485,9 +1486,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function selectedToolRecords() {
-    if (elements.sub2apiOperation.value === "split") return state.toolRecords;
-    if (!toolHealthComplete()) return state.toolRecords;
     return state.toolRecords.filter((record, index) => {
+      if (skipFreeToolRecord(record)) return false;
+      if (elements.sub2apiOperation.value === "split" || !toolHealthComplete()) return true;
       const result = state.health[index];
       if (elements.downloadScope.value === "non200") return result?.status !== 200;
       return (elements.downloadScope.value === "all" || result?.status === 200) && usageMatchesFilter(record, result);
@@ -1495,9 +1496,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function selectedConverted() {
-    if (!healthComplete() || elements.downloadScope.value === "all") return state.converted;
     const include200 = elements.downloadScope.value !== "non200";
-    return state.converted.filter((_, index) => include200 ? state.health[index]?.status === 200 : state.health[index]?.status !== 200);
+    return state.converted.filter((item, index) => !skipFreeConverted(item)
+      && (!healthComplete() || elements.downloadScope.value === "all"
+        || (include200 ? state.health[index]?.status === 200 : state.health[index]?.status !== 200)));
   }
 
   function formatDuration(seconds) {
@@ -1578,6 +1580,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       const filtered = state.toolRecords
         .map((record, index) => ({ record, result: state.health[index] }))
         .filter(({ record, result }) => {
+          if (skipFreeToolRecord(record)) return false;
           if (!show200) return result?.status !== 200;
           return result?.status === 200 && usageMatchesFilter(record, result);
         });
@@ -1596,7 +1599,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const show200 = elements.healthFilter.value !== "non200";
     const filtered = state.converted
       .map((item, index) => ({ item, result: state.health[index] }))
-      .filter(({ result }) => show200 ? result?.status === 200 : result?.status !== 200);
+      .filter(({ item, result }) => !skipFreeConverted(item) && (show200 ? result?.status === 200 : result?.status !== 200));
     elements.healthBody.innerHTML = filtered
       .map(({ item, result }) => healthRow(item, result, state.logoutResults.find((logout) => logout.index === result?.index)))
        .join("") || `<tr><td colspan="8" class="empty">没有${show200 ? " HTTP 200" : "非 200"}账号。</td></tr>`;
@@ -1618,9 +1621,45 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function convertedPlanType(item) {
-    const key = healthCredentialKey(convertedHealthAccount(item));
-    const health = freshHealth.has(key) ? sharedHealth.get(key) : null;
-    return String(firstNonEmpty(health?.usage?.planType, item.cpa.plan_type) || '').trim().toLowerCase();
+    return accountPlanType(convertedHealthAccount(item), item.cpa.plan_type);
+  }
+
+  function accountPlanType(account, fallback) {
+    const key = healthCredentialKey(account);
+    const health = sharedHealth.get(key);
+    return String(firstNonEmpty(health?.usage?.planType, knownHealthPlans.get(key), fallback) || '').trim().toLowerCase();
+  }
+
+  function skipFreeConverted(item) {
+    return elements.converterSkipFree.checked && convertedPlanType(item) === 'free';
+  }
+
+  function skipFreeToolRecord(record) {
+    return elements.converterSkipFree.checked && accountPlanType(toolHealthAccount(record), firstNonEmpty(
+      record.planType, record.account?.credentials?.plan_type, record.account?.plan_type, record.account?.extra?.plan_type,
+    )) === 'free';
+  }
+
+  function healthCandidates(includeSkipped = false) {
+    return state.toolRecords.length
+      ? state.toolRecords.filter(record => includeSkipped || !skipFreeToolRecord(record)).map(toolHealthAccount)
+      : state.converted.filter(item => includeSkipped || !skipFreeConverted(item)).map(convertedHealthAccount);
+  }
+
+  function renderHealthSummary() {
+    const accounts = healthCandidates();
+    const skipped = healthCandidates(true).length - accounts.length;
+    const skipMessage = skipped ? `已跳过 ${skipped} 个 free 账号。` : '';
+    if (!accounts.length) {
+      setStatus(elements.healthStatus, skipMessage || '等待自动测活。');
+      return;
+    }
+    const results = accounts.map(account => sharedHealth.get(healthCredentialKey(account)));
+    if (!results.every(Boolean)) return;
+    const ok = results.filter(item => item.status === 200).length;
+    const failed = results.filter(item => item.status == null).length;
+    const forbidden = results.filter(item => item.status === 403).length;
+    setStatus(elements.healthStatus, `测活完成：HTTP 200 ${ok}，非 200 ${results.length - ok}，403 拒绝 ${forbidden}，失败 ${failed}。${skipMessage}`, forbidden || failed ? 'error' : 'ok');
   }
 
   function toolHealthAccount(record) {
@@ -1633,31 +1672,41 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
 
   function refreshSharedHealth() {
     const converted = state.converted.map(convertedHealthAccount);
-    const visible = state.format === 'sub2api-tools' ? state.toolRecords.map(toolHealthAccount) : converted;
-    const results = visible.map((account, index) => {
+    const isTool = state.format === 'sub2api-tools';
+    const records = isTool ? state.toolRecords : state.converted;
+    const skip = isTool ? skipFreeToolRecord : skipFreeConverted;
+    const results = records.map((record, index) => {
+      const account = isTool ? toolHealthAccount(record) : converted[index];
       const result = sharedHealth.get(healthCredentialKey(account));
       return result ? { ...result, index } : null;
     });
-    state.health = results.every(Boolean) ? results : [];
+    // Keep source indices stable for health filters, logout and device details.
+    state.health = results.every((result, index) => result || skip(records[index])) ? results : [];
     const testAccounts = converted.map((account, index) => ({ ...account, planType: convertedPlanType(state.converted[index]) }));
     const isFree = account => String(account.planType || '').trim().toLowerCase() === 'free';
     const healthy = testAccounts.filter(account => freshHealth.has(healthCredentialKey(account)) && sharedHealth.get(healthCredentialKey(account))?.status === 200);
     evaluationEligibility = { total: converted.length,
       healthyCount: healthy.length, skippedFree: testAccounts.filter(isFree).length,
-      pending: Boolean(healthController) && converted.some(account => !freshHealth.has(healthCredentialKey(account))),
+      pending: Boolean(healthController) && state.converted.some(item => !skipFreeConverted(item) && !freshHealth.has(healthCredentialKey(convertedHealthAccount(item)))),
       accounts: healthy.filter(account => !isFree(account)) };
   }
 
   async function startHealthCheck({ force = true } = {}) {
     cancelHealthCheck();
-    const all = state.toolRecords.length ? state.toolRecords.map(toolHealthAccount) : state.converted.map(convertedHealthAccount);
-    const activeKeys = new Set(all.map(healthCredentialKey));
-    for (const key of sharedHealth.keys()) if (!activeKeys.has(key) || force) { sharedHealth.delete(key); freshHealth.delete(key); }
+    const all = healthCandidates();
+    const activeKeys = new Set(healthCandidates(true).map(healthCredentialKey));
+    const checkedKeys = new Set(all.map(healthCredentialKey));
+    // Retain plan knowledge when invalidating health, including toggles during a recheck.
+    for (const [key, result] of sharedHealth) {
+      if (result?.usage?.planType) knownHealthPlans.set(key, result.usage.planType);
+      if (!activeKeys.has(key) || (force && checkedKeys.has(key))) { sharedHealth.delete(key); freshHealth.delete(key); }
+    }
+    for (const key of knownHealthPlans.keys()) if (!activeKeys.has(key)) knownHealthPlans.delete(key);
     const accounts = all.filter(account => !freshHealth.has(healthCredentialKey(account)));
     if (!accounts.length) {
       refreshSharedHealth();
       updateOutput();
-      if (!all.length) setStatus(elements.healthStatus, '等待自动测活。');
+      renderHealthSummary();
       return;
     }
     const controller = new AbortController();
@@ -1684,11 +1733,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         sharedHealth.set(key, payload.results[index]);
         freshHealth.add(key);
       });
-      const results = all.map(account => sharedHealth.get(healthCredentialKey(account)));
-      const ok = results.filter(item => item?.status === 200).length;
-      const failed = results.filter(item => item?.status == null).length;
-      const forbidden = results.filter(item => item?.status === 403).length;
-      setStatus(elements.healthStatus, `测活完成：HTTP 200 ${ok}，非 200 ${results.length - ok}，403 拒绝 ${forbidden}，失败 ${failed}。`, forbidden || failed ? 'error' : 'ok');
+      renderHealthSummary();
     } catch (error) {
       if (!isCurrent() || run !== state.healthRun) return;
       setStatus(elements.healthStatus, `自动测活失败：${error instanceof Error ? error.message : String(error)}`, 'error');
@@ -1737,7 +1782,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const manualRecords = parsed ? parsed.records.filter(row => !linked.has(keyOfRecord(row))) : manual.map(row => record(row.item));
     state.toolRecords = mergeSharedAccounts(manualRecords, login.map(row => record(row.item)), keyOfRecord);
     for (const row of state.toolRecords) {
-      try { row.healthAccount = convertedHealthAccount(convertSession(row.account, { now })); }
+      try {
+        const item = convertSession(row.account, { now });
+        row.healthAccount = convertedHealthAccount(item);
+        row.planType = item.cpa.plan_type;
+      }
       catch { /* Non-token records remain available to the batch tools. */ }
     }
     state.toolParsed = { firstDocument: parsed?.firstDocument || { type: 'sub2api-data', version: 1 },
@@ -1785,7 +1834,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     persistBrowserWorkspace();
     const isTool = state.format === "sub2api-tools";
     const isLogin = state.format === "protocol-login";
-    const hasConverted = state.converted.length > 0;
+    const visibleConverted = state.converted.filter(item => !skipFreeConverted(item));
+    const skippedFree = state.converted.length - visibleConverted.length;
+    const selected = selectedConverted();
+    const hasConverted = visibleConverted.length > 0;
     let outputText = "";
 
     if (isTool && state.toolParsed) {
@@ -1801,18 +1853,23 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         ? (elements.splitScope.value === "unmatched" ? state.toolResult.unmatchedText : state.toolResult.matchedText)
         : state.toolResult.outputText;
     } else if (!isLogin && hasConverted) {
-      outputText = JSON.stringify(buildOutputDocument(selectedConverted()), null, 2);
+      outputText = JSON.stringify(buildOutputDocument(selected), null, 2);
     }
 
     state.outputText = outputText;
     elements.output.value = outputText;
     elements.copyOutput.disabled = !outputText;
     elements.downloadOutput.disabled = isLogin || !outputText || (!isTool && elements.downloadScope.value === "200" && !healthComplete());
-    elements.statCount.textContent = String(isTool ? (state.toolResult?.accountCount || 0) : (isLogin ? state.loginLastAccounts.length : state.converted.length));
-    elements.statErrors.textContent = String(state.skipped.length);
+    elements.statCount.textContent = String(isTool ? (state.toolResult?.accountCount || 0) : (isLogin ? state.loginLastAccounts.length : visibleConverted.length));
+    elements.statErrors.textContent = String(state.skipped.length + skippedFree);
     elements.statFormat.textContent = OUTPUT_LABELS[state.format];
     const syncedCount = projectLoginAccounts(state.browserAccounts).length;
-    document.querySelector('#shared-account-status').textContent = `共享账号 ${state.converted.length} 个 · 协议登录提供 ${syncedCount} 个 · 测活通过 ${evaluationEligibility.healthyCount || 0} 个`;
+    const visibleSyncedCount = state.sessions.filter((source, index) => source.path?.startsWith('login:') && !skipFreeConverted(state.converted[index])).length;
+    const healthyCount = visibleConverted.filter(item => {
+      const key = healthCredentialKey(convertedHealthAccount(item));
+      return freshHealth.has(key) && sharedHealth.get(key)?.status === 200;
+    }).length;
+    document.querySelector('#shared-account-status').textContent = `共享账号 ${visibleConverted.length} 个 · 协议登录提供 ${visibleSyncedCount} 个 · 测活通过 ${healthyCount} 个${skippedFree ? ` · 已跳过 ${skippedFree} 个 free 账号` : ''}`;
     document.querySelector('#login-shared-status').textContent = syncedCount
       ? `已同步 ${syncedCount} 个个人 / 工作区凭据，可直接切换到格式转换、批处理和模型测试。`
       : '登录成功后自动同步到其他功能，无需下载再导入。';
@@ -1837,19 +1894,20 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (isSplit && state.toolResult) {
       setStatus(elements.outputStatus, `拆分完成：匹配 ${state.toolResult.matchedCount}，未匹配 ${state.toolResult.unmatchedCount}。`, "ok");
     } else if (outputText) {
-      setStatus(elements.outputStatus, `已生成 ${isTool ? state.toolResult.accountCount : state.converted.length} 个账号。`, "ok");
+      setStatus(elements.outputStatus, `已生成 ${isTool ? state.toolResult.accountCount : selected.length} 个账号。`, "ok");
     } else {
       setStatus(elements.outputStatus, "暂无输出。", state.skipped.length ? "error" : "");
     }
   }
 
   function renderAccounts() {
-    if (!state.converted.length) {
+    const accounts = state.converted.filter(item => !skipFreeConverted(item));
+    if (!accounts.length) {
       elements.accountBody.innerHTML = '<tr><td colspan="4" class="empty">暂无可转换账号。</td></tr>';
       return;
     }
 
-    elements.accountBody.innerHTML = state.converted.map((item) => `
+    elements.accountBody.innerHTML = accounts.map((item) => `
       <tr>
         <td><div class="cell-clip" title="${escapeHtml(item.name)}">${escapeHtml(item.name || "-")}</div></td>
         <td><div class="cell-clip" title="${escapeHtml(item.email)}">${escapeHtml(item.email || "-")}</div></td>
@@ -1880,6 +1938,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (!text.trim() && !projectLoginAccounts(state.browserAccounts).length) {
       sharedHealth.clear();
       freshHealth.clear();
+      knownHealthPlans.clear();
       state.healthRun += 1;
       state.health = [];
       resetLogoutAllSessions();
@@ -2522,10 +2581,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function convertedPushSelection() {
-    const selected = selectedConverted();
-    const accounts = elements.converterSkipFree.checked
-      ? selected.filter(item => convertedPlanType(item) !== 'free') : selected;
-    return { accounts, skippedFree: selected.length - accounts.length };
+    return { accounts: selectedConverted(), skippedFree: state.converted.filter(skipFreeConverted).length };
   }
 
   let converterFilterSaving = false;
@@ -2576,7 +2632,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     for (const radio of elements.pushTarget.querySelectorAll('input')) radio.disabled = pushBusy || monitorBusy;
     elements.pushHint.textContent = login
       ? '选择目标并保存配置后，获取全部工作区 RT 时自动推送非 free 账号；手动下载包含所有类型。配置加密保存在当前浏览器。'
-      : `配置加密保存在当前浏览器。推送范围沿用下载范围，格式由推送目标决定。${elements.converterSkipFree.checked ? `已开启跳过 free，本次跳过 ${selection.skippedFree} 个账号。` : '已允许推送 free 账号。'}`;
+      : `配置加密保存在当前浏览器。推送范围沿用下载范围，格式由推送目标决定。${elements.converterSkipFree.checked ? `测活、展示、转换和推送均跳过 free，当前跳过 ${selection.skippedFree} 个账号。` : '已允许测活、展示、转换和推送 free 账号。'}`;
   }
 
   function renderPushResults() {
@@ -4129,15 +4185,16 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const isCurrent = workspaceTaskIsCurrent();
     const previous = !elements.converterSkipFree.checked;
     converterFilterSaving = true;
-    updatePushControls();
+    cancelHealthCheck();
+    updateOutput();
     try { await persistBrowserWorkspace(true, true); }
     catch (error) {
       if (isCurrent()) {
         elements.converterSkipFree.checked = previous;
-        setStatus(elements.pushStatus, `推送筛选设置保存失败：${error.message}`, 'error');
+        setStatus(elements.pushStatus, `账号筛选设置保存失败：${error.message}`, 'error');
       }
     } finally {
-      if (isCurrent()) { converterFilterSaving = false; updatePushControls(); }
+      if (isCurrent()) { converterFilterSaving = false; startHealthCheck({ force: false }); }
     }
   });
   elements.pushConverted?.addEventListener('click', () => runPush(async target => convertedPushSelection().accounts.map(item => target === 'cpa' ? item.cpa : applySub2apiOutputConfig(item.sub2apiAccount)),
@@ -4263,7 +4320,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const button = event.target.closest?.('[data-device-index]');
     if (!button) return;
     const index = Number(button.dataset.deviceIndex);
-    const result = state.health.find(item => item.index === index);
+    const result = state.health.find(item => item?.index === index);
     if (!result) return;
     const account = state.format === "sub2api-tools" ? state.toolRecords[index]?.account : state.converted[index];
     openDeviceDetails(result, account?.name || account?.email);
@@ -4344,6 +4401,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const blockWorkspaceTasks = (release = false) => {
       sharedHealth.clear();
       freshHealth.clear();
+      knownHealthPlans.clear();
       evaluationEligibility = { accounts: [], total: 0, pending: false };
       teamCheckout.reset();
       modelEvaluation.reset();

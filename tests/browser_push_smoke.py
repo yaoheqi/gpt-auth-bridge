@@ -335,7 +335,7 @@ def exercise_push(page, login_plans):
         converted = next(call[2] for call in calls[before:] if call[2]['access_token'] == 'fixture-session-access')
         assert converted['refresh_token'] == 'fixture-session-rt'
         assert converted['type'] == 'codex'
-        # The same default applies to Sub2API; downloads still contain free accounts.
+        # The same default applies to Sub2API pushes and conversion downloads.
         page.locator('input[name="push-target"][value="sub2api"]').check()
         page.locator('#push-converted').click()
         expect(page.locator('#push-converted')).to_be_enabled()
@@ -343,7 +343,7 @@ def exercise_push(page, login_plans):
         assert {item['credentials']['chatgpt_account_id'] for item in calls[-1][2]['accounts']} == {'session', 'personal', 'business'}
         with page.expect_download() as download:
             page.locator('#download-output').click()
-        assert len(json.loads(Path(download.value.path()).read_text(encoding='utf-8'))['accounts']) == 4
+        assert len(json.loads(Path(download.value.path()).read_text(encoding='utf-8'))['accounts']) == 3
         # Opting in is durable and applies to both target formats.
         page.locator('#converter-skip-free').uncheck()
         expect(page.locator('#converter-skip-free')).to_be_enabled()
@@ -423,7 +423,7 @@ def exercise_push(page, login_plans):
         page.remove_listener('request', record)
         remote.shutdown()
         remote.server_close()
-    print('Browser push: non-free auto-push, free downloads, opt-out, Sub2API/CPA dialogs, encrypted settings, workspace isolation, partial retry: PASS')
+    print('Browser push: non-free auto-push and conversion downloads, login exports, opt-out, Sub2API/CPA dialogs, encrypted settings, workspace isolation, partial retry: PASS')
 
 
 def exercise_saved_conversion(source):

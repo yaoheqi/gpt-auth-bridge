@@ -631,6 +631,89 @@ async function testAutomaticHealthFilterAndDownloadScope() {
   assert.deepEqual(JSON.parse(output.value).accounts.map((item) => item.name), ["invalid@example.com"]);
 }
 
+async function testSkipFreeAppliesToHealthDisplayAndEveryOutputFormat() {
+  const probes = [];
+  const { elements, formatButtons } = loadPageScript({
+    fetch: async (_url, init) => {
+      const accounts = JSON.parse(init.body).accounts;
+      probes.push(accounts.map(account => account.email));
+      return { ok: true, json: async () => ({ results: accounts.map((account, index) => ({
+        index, status: account.email.startsWith('invalid') ? 401 : 200,
+        usage: { planType: account.email.startsWith('discovered') ? ' FrEe ' : 'plus' },
+        devices: [{ name: account.email }],
+      })) }) };
+    },
+  });
+  const skip = elements.get('#converter-skip-free');
+  const scope = elements.get('#download-scope');
+  const input = elements.get('#session-input');
+  skip.checked = true;
+  scope.value = 'all';
+  const fixtures = [
+    { email: 'known-free@example.com', accessToken: 'free-token', account: { planType: ' FrEe ' } },
+    { email: 'paid@example.com', accessToken: 'paid-token', plan_type: 'plus' },
+    { email: 'invalid@example.com', accessToken: 'invalid-token', plan_type: 'team' },
+    { email: 'discovered-free@example.com', accessToken: 'unknown-token' },
+  ];
+  input.value = JSON.stringify(fixtures);
+  dispatch(input, 'input');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(probes[0], ['paid@example.com', 'invalid@example.com', 'discovered-free@example.com']);
+  assert.equal(elements.get('#stat-count').textContent, '2');
+  assert.equal(elements.get('#stat-errors').textContent, '2');
+  assert.equal(elements.get('#converter-free-count').textContent, '（2）');
+  assert.match(elements.get('#health-status').textContent, /HTTP 200 1，非 200 1/);
+  for (const selector of ['#account-body', '#health-body']) {
+    assert.doesNotMatch(elements.get(selector).innerHTML, /free@example/);
+    assert.match(elements.get(selector).innerHTML, /paid@example/);
+  }
+  // Skipping index zero must preserve the remaining rows' device-detail mapping.
+  elements.get('#health-body').listeners.click({ target: { closest: () => ({ dataset: { deviceIndex: '1' } }) } });
+  assert.match(elements.get('#device-details-list').innerHTML, /paid@example/);
+  for (const format of ['sub2api', 'cpa', 'cockpit', 'codex']) {
+    dispatch(formatButtons.find(button => button.dataset.format === format), 'click');
+    assert.doesNotMatch(elements.get('#output').value, /free-token|unknown-token/);
+    assert.match(elements.get('#output').value, /paid-token/);
+  }
+  dispatch(formatButtons.find(button => button.dataset.format === 'sub2api'), 'click');
+  scope.value = 'non200';
+  dispatch(scope, 'change');
+  assert.deepEqual(JSON.parse(elements.get('#output').value).accounts.map(account => account.name), ['invalid@example.com']);
+  elements.get('#health-filter').value = 'non200';
+  dispatch(elements.get('#health-filter'), 'change');
+  assert.doesNotMatch(elements.get('#health-body').innerHTML, /free@example/);
+  dispatch(elements.get('#shared-health-check'), 'click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(probes[1], ['paid@example.com', 'invalid@example.com'], 'recheck also skips free plans learned from health');
+  scope.value = 'all';
+  skip.checked = false;
+  dispatch(scope, 'change');
+  assert.equal(JSON.parse(elements.get('#output').value).accounts.length, 4);
+  assert.equal(input.value, JSON.stringify(fixtures), 'filtering retains the original input');
+  skip.checked = true;
+  elements.get('#usage-filter').value = 'all';
+  selectSub2apiTools(elements, formatButtons, 'json-to-txt');
+  assert.doesNotMatch(elements.get('#output').value, /free-token|unknown-token/);
+  assert.match(elements.get('#output').value, /paid-token/);
+  assert.doesNotMatch(elements.get('#health-body').innerHTML, /free@example/);
+}
+
+async function testAllFreeAccountsDoNotSendHealthRequests() {
+  const probes = [];
+  const { elements } = loadPageScript({ fetch: async (...args) => { probes.push(args); } });
+  elements.get('#converter-skip-free').checked = true;
+  elements.get('#session-input').value = JSON.stringify({ email: 'free@example.com', accessToken: 'free-token', plan_type: 'free' });
+  dispatch(elements.get('#session-input'), 'input');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(probes.length, 0);
+  assert.equal(elements.get('#stat-count').textContent, '0');
+  assert.equal(elements.get('#stat-errors').textContent, '1');
+  assert.doesNotMatch(elements.get('#output').value, /free-token/);
+  assert.doesNotMatch(elements.get('#health-status').textContent, /正在|失败/);
+  assert.match(elements.get('#health-status').textContent, /跳过 1 个 free/);
+  assert.equal(elements.get('#logout-all-sessions').disabled, true);
+}
+
 async function testLogoutAllSessionsUsesHealthySub2apiAccounts() {
   const requests = [];
   const { elements } = loadPageScript({
@@ -985,6 +1068,8 @@ async function main() {
   await testSub2apiToolsRenderUsageWindows();
   await testTeamPlusProUsageFiltersDoNotRequireFiveHourWindow();
   await testAutomaticHealthFilterAndDownloadScope();
+  await testSkipFreeAppliesToHealthDisplayAndEveryOutputFormat();
+  await testAllFreeAccountsDoNotSendHealthRequests();
   await testLogoutAllSessionsUsesHealthySub2apiAccounts();
   console.log("convert-session tests passed");
 }

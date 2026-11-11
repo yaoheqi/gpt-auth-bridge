@@ -105,6 +105,9 @@ def main():
                 page.route('**/api/model-evaluation', evaluate)
                 page.goto(url)
                 page.wait_for_load_state('networkidle')
+                # This suite probes imported free plans to verify fresh usage overrides them.
+                page.locator('#converter-skip-free').uncheck()
+                expect(page.locator('#converter-skip-free')).to_be_enabled()
                 panel = page.locator('#model-evaluation')
                 start = panel.locator('[data-evaluation-start]')
                 expect(panel).to_be_hidden()

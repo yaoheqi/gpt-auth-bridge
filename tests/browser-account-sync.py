@@ -14,6 +14,114 @@ from playwright.sync_api import sync_playwright, expect
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def check_skip_free(browser, url):
+    context = browser.new_context(accept_downloads=True)
+    page = context.new_page()
+    probes, errors, pending = [], [], []
+    hold = False
+    page.on('pageerror', lambda error: errors.append(str(error)))
+
+    def health(route):
+        accounts = route.request.post_data_json['accounts']
+        probes.append([account['email'] for account in accounts])
+        result = {'results': [{'index': index, 'status': 200,
+                              'usage': {'planType': 'free' if 'free' in account['email'] else 'plus'}}
+                             for index, account in enumerate(accounts)]}
+        if hold:
+            pending.append((route, result))
+        else:
+            route.fulfill(json=result)
+
+    context.route('**/api/session-health', health)
+    try:
+        page.goto(url)
+        page.wait_for_load_state('networkidle')
+        fixtures = [
+            {'email': 'known-free@example.com', 'access_token': 'known-free-token', 'plan_type': ' FrEe '},
+            {'email': 'paid@example.com', 'access_token': 'paid-token', 'plan_type': 'plus'},
+            {'email': 'discovered-free@example.com', 'access_token': 'discovered-free-token'},
+        ]
+        source = json.dumps(fixtures)
+        page.locator('#session-input').fill(source)
+        expect(page.locator('#health-status')).to_contain_text('HTTP 200 1')
+        assert probes == [['paid@example.com', 'discovered-free@example.com']], probes
+        expect(page.locator('#converter-free-count')).to_have_text('（2）')
+        expect(page.locator('#stat-count')).to_have_text('1')
+        expect(page.locator('#stat-errors')).to_have_text('2')
+        expect(page.locator('#health-body')).not_to_contain_text('free@example.com')
+        expect(page.locator('#account-body')).not_to_contain_text('free@example.com')
+        page.locator('#download-scope').select_option('all')
+        with page.expect_download() as download:
+            page.locator('#download-output').click()
+        output = json.loads(Path(download.value.path()).read_text(encoding='utf-8'))
+        assert [account['name'] for account in output['accounts']] == ['paid@example.com']
+        # A health-discovered free plan stays excluded after the saved workspace reloads.
+        saved = page.evaluate('''async () => {
+            for (let attempt = 0; attempt < 100; attempt++) {
+                const snapshot = await browserWorkspace.read();
+                if (snapshot?.state?.health?.some(result => result?.usage?.planType === 'free')) return snapshot;
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            throw new Error('Health snapshot was not saved');
+        }''')
+        assert saved and saved['state']['conversionInput']['text'] == source, {
+            'saved': saved, 'errors': errors,
+            'status': page.locator('#browser-storage-status').inner_text(),
+            'url': page.url,
+        }
+        before = len(probes)
+        page.reload()
+        page.wait_for_load_state('networkidle')
+        assert not errors, errors
+        expect(page.locator('#converter-free-count')).to_have_text('（2）')
+        page.locator('#shared-health-check').click()
+        expect(page.locator('#health-status')).to_contain_text('HTTP 200 1')
+        assert probes[before:] and all(batch == ['paid@example.com'] for batch in probes[before:]), probes
+        # Removing the filter probes free accounts without fresh results after reload.
+        before = len(probes)
+        page.locator('#converter-skip-free').uncheck()
+        expect(page.locator('#converter-skip-free')).to_be_enabled()
+        expect(page.locator('#health-status')).to_contain_text('HTTP 200 3')
+        assert probes[before:] == [['known-free@example.com', 'discovered-free@example.com']], probes[before:]
+        expect(page.locator('#stat-count')).to_have_text('3')
+        expect(page.locator('#health-body')).to_contain_text('known-free@example.com')
+        assert len(json.loads(page.locator('#output').input_value())['accounts']) == 3
+        expect(page.locator('#session-input')).to_have_value(source)
+        # Switching while a health request is pending aborts it and ignores stale results.
+        hold = True
+        page.locator('#shared-health-check').click()
+        expect(page.locator('#health-status')).to_contain_text('正在测活 3')
+        page.wait_for_function("() => document.querySelector('#health-status').textContent.includes('正在测活')")
+        hold = False
+        page.locator('#converter-skip-free').check()
+        expect(page.locator('#converter-skip-free')).to_be_enabled()
+        expect(page.locator('#health-status')).to_contain_text('HTTP 200 1')
+        assert probes[-1] == ['paid@example.com'], probes
+        for route, result in pending:
+            route.fulfill(json=result)
+        expect(page.locator('#stat-count')).to_have_text('1')
+        expect(page.locator('#health-body')).not_to_contain_text('free@example.com')
+        assert [account['name'] for account in json.loads(page.locator('#output').input_value())['accounts']] == ['paid@example.com']
+        # All-free input sends no request and remains recoverable by unchecking.
+        before = len(probes)
+        page.locator('#session-input').fill(json.dumps(fixtures[:1]))
+        expect(page.locator('#health-status')).to_contain_text('已跳过 1 个 free')
+        expect(page.locator('#stat-count')).to_have_text('0')
+        expect(page.locator('#download-output')).to_be_disabled()
+        assert len(probes) == before
+        page.locator('#converter-skip-free').uncheck()
+        expect(page.locator('#converter-skip-free')).to_be_enabled()
+        expect(page.locator('#health-status')).to_contain_text('HTTP 200 1')
+        expect(page.locator('#stat-count')).to_have_text('1')
+        page.reload()
+        expect(page.locator('#converter-skip-free')).not_to_be_checked()
+        expect(page.locator('#stat-count')).to_have_text('1')
+        assert not errors, errors
+    finally:
+        context.close()
+    print('Skip free: requests, display, counts, downloads, saved health, toggling, stale responses and all-free input: PASS')
+
+
 def check_account_sync(browser, url):
     context = browser.new_context(viewport={'width': 1440, 'height': 1000})
     page = context.new_page()
@@ -172,6 +280,7 @@ def main():
                 raise RuntimeError('startup timed out')
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
+                check_skip_free(browser, url)
                 check_account_sync(browser, url)
                 browser.close()
         finally:
