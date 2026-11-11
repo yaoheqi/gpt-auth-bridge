@@ -186,10 +186,19 @@ class SentinelRuntimeTest(unittest.TestCase):
 
     def test_sdk_ready_document_does_not_wait_for_unrelated_scripts(self):
         self.server.block_asset = True
-        started = time.monotonic()
-        result = self.extract(device_id='fixture-device', auth_flow='password_verify', include_so_token=False)
+        goto = Page.goto
+        navigation_started = []
+
+        def timed_navigation(page, *args, **kwargs):
+            navigation_started.append(time.monotonic())
+            return goto(page, *args, **kwargs)
+
+        # Measure navigation rather than the host-dependent browser cold start.
+        with patch.object(Page, 'goto', timed_navigation):
+            result = self.extract(device_id='fixture-device', auth_flow='password_verify', include_so_token=False)
         self.assertEqual(json.loads(result['sentinel_token'])['id'], 'fixture-device')
-        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(len(navigation_started), 1)
+        self.assertLess(time.monotonic() - navigation_started[0], 4)
         self.assertFalse(self.server.asset_released.is_set())
 
     def test_login_sdk_ready_under_strict_csp(self):
@@ -230,22 +239,24 @@ class SentinelRuntimeTest(unittest.TestCase):
         self.server.sdk_delay_ms = 5000
         stopped = threading.Event()
         timers = []
+        committed = []
         goto = Page.goto
 
         def cancel_after_commit(page, *args, **kwargs):
             response = goto(page, *args, **kwargs)
+            committed.append(time.monotonic())
             timer = threading.Timer(0.1, stopped.set)
             timers.append(timer)
             timer.start()
             return response
 
-        started = time.monotonic()
         try:
             with patch.object(Page, 'goto', cancel_after_commit), self.assertRaises(InterruptedError):
                 self.extract(device_id='fixture-device', auth_flow='password_verify',
                              include_so_token=False, stop_event=stopped)
             self.assertEqual(self.server.token_calls, 0)
-            self.assertLess(time.monotonic() - started, 3)
+            self.assertEqual(len(committed), 1)
+            self.assertLess(time.monotonic() - committed[0], 3)
         finally:
             for timer in timers:
                 timer.cancel()
@@ -286,8 +297,10 @@ class SentinelRuntimeTest(unittest.TestCase):
     def test_http_error_fails_promptly_with_safe_status_after_one_recovery(self):
         self.server.statuses = [503, 503]
         runtime = browser_worker.BrowserRuntime()
-        started = time.monotonic()
         try:
+            # These short deadlines exercise navigation, not browser startup.
+            runtime.ensure(lambda *_: None)
+            started = time.monotonic()
             with self.assertRaises(Exception) as caught:
                 self.worker_request(runtime, deadlineSeconds=5)
             payload = browser_worker.error_payload(caught.exception)
@@ -305,6 +318,7 @@ class SentinelRuntimeTest(unittest.TestCase):
     def test_forbidden_and_rate_limited_documents_are_not_retried(self):
         runtime = browser_worker.BrowserRuntime()
         try:
+            runtime.ensure(lambda *_: None)
             for status in (403, 429):
                 with self.subTest(status=status):
                     self.server.statuses = [status]
@@ -322,8 +336,9 @@ class SentinelRuntimeTest(unittest.TestCase):
     def test_missing_sdk_has_its_own_short_wait_and_no_navigation_retry(self):
         self.server.no_sdk = True
         runtime = browser_worker.BrowserRuntime()
-        started = time.monotonic()
         try:
+            runtime.ensure(lambda *_: None)
+            started = time.monotonic()
             with patch.object(sentinel, 'SDK_READY_TIMEOUT_MS', 200, create=True):
                 with self.assertRaises(Exception) as caught:
                     self.worker_request(runtime, deadlineSeconds=4)
