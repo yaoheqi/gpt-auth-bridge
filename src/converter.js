@@ -24,6 +24,7 @@ const STATIC_FILES = Object.freeze({
   "/account-workspace.js": "account-workspace.js",
   "/team-checkout.js": "team-checkout.js",
   "/model-evaluation.js": "model-evaluation.js",
+  "/evaluation-accounts.js": "evaluation-accounts.js",
   "/evaluation-stream.js": "evaluation-stream.js",
   "/evaluation-preview.js": "evaluation-preview.js",
   "/vendor/markdown-it.min.js": "../node_modules/markdown-it/dist/markdown-it.min.js",

@@ -1,6 +1,7 @@
 import { splitPasswordTotpLine } from './login-account-format.js';
 import { initializeTeamCheckout } from './team-checkout.js';
 import { initializeModelEvaluation } from './model-evaluation.js';
+import { evaluationAccountOwner } from './evaluation-accounts.js';
 import { projectLoginAccounts, sharedAccountKey, healthCredentialKey, mergeSharedAccounts, loginCredentialLines } from './account-workspace.js';
 import { validationFailureHint, validationFailureFields, validationFailureLabel } from './validation-failure.js';
 import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent } from './operation-contract.js';
@@ -95,6 +96,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   let monitorLastSummary = '';
   let selfLeaveBusy = false;
   let protocolLogoutBusy = false;
+  let evaluationLogoutBusy = false;
   let healthController;
   let evaluationEligibility = { accounts: [], total: 0, pending: false };
   const sharedHealth = new Map();
@@ -1935,7 +1937,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
 
   function scheduleConvert() {
     evaluationEligibility = { accounts: [], total: 0, pending: false };
-    modelEvaluation.reset();
+    if (!evaluationLogoutBusy) modelEvaluation.reset();
     cancelHealthCheck();
     const text = elements.input.value;
     if (!text.trim() && !projectLoginAccounts(state.browserAccounts).length) {
@@ -4063,11 +4065,100 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   const teamCheckout = initializeTeamCheckout({ request: pageFetch, isWorkspaceCurrent: workspaceTaskIsCurrent });
+  async function logoutEvaluationAccounts(accounts) {
+    const isCurrent = workspaceTaskIsCurrent();
+    const disabled = [...document.querySelectorAll('input, textarea, select, button')].map(node => ({ node, disabled: node.disabled }));
+    evaluationLogoutBusy = true;
+    protocolLogoutBusy = true;
+    stopSessionMonitor(true);
+    cancelHealthCheck();
+    disabled.forEach(({ node }) => { node.disabled = true; });
+    const outcomes = [];
+    const wanted = new Set(accounts.map(evaluationAccountOwner));
+    const linked = state.browserAccounts.filter(account => wanted.has(evaluationAccountOwner(account)));
+    const linkedOwners = new Set(linked.map(evaluationAccountOwner));
+    const manual = accounts.filter(account => !linkedOwners.has(evaluationAccountOwner(account)));
+    const record = rows => outcomes.push(...rows);
+    try {
+      if (linked.length) {
+        const results = new Map();
+        try {
+          const result = await loginIcloudStream('/api/v2/accounts/protocol-logout-all', {
+            ids: linked.map(account => String(account.id)), confirmed: true, ...selectedLoginProxyNetwork(),
+          }, (name, data) => { if (name === 'account_done') results.set(String(data.id), data); });
+          requireCurrentWorkspace(isCurrent);
+          for (const row of result.results || []) results.set(String(row.id), row);
+        } catch (error) {
+          requireCurrentWorkspace(isCurrent);
+          for (const account of linked) if (!results.has(String(account.id))) results.set(String(account.id), { ok: false, error: error.message });
+        }
+        record(linked.map(account => ({ ...results.get(String(account.id)), email: account.email })));
+      }
+      if (manual.length) {
+        try {
+          const response = await pageFetch('/api/logout-all-sessions', { method: 'POST', credentials: 'same-origin',
+            headers: loginProxyHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ accounts: manual.map((account, index) => ({ ...account, index })), concurrency: selectedTaskConcurrency() }),
+          });
+          const result = await readJsonResponse(response);
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          requireCurrentWorkspace(isCurrent);
+          record(manual.map((account, index) => ({ ...result.results?.find(row => row.index === index), email: account.email })));
+        } catch (error) { requireCurrentWorkspace(isCurrent); record(manual.map(account => ({ email: account.email, ok: false, error: error.message }))); }
+      }
+      const succeeded = new Set(outcomes.filter(row => row.ok).map(evaluationAccountOwner));
+      if (succeeded.size) {
+        const ids = new Set(state.browserAccounts.filter(account => succeeded.has(evaluationAccountOwner(account))).map(account => String(account.id)));
+        for (const id of ids) markMonitorStopped(id, 'sessions_logged_out');
+        for (const key of ['loginSessionIds', 'loginPersonalIds', 'loginBusinessIds', 'loginLastIds']) state[key] = state[key].filter(id => !ids.has(String(id)));
+        clearLoginRetry();
+        // Remove imported copies too: logging out one workspace invalidates its siblings.
+        if (elements.input.value.trim()) {
+          const remaining = parseJsonValues(elements.input.value).map(document => {
+            const removed = new Set(collectSessionLikeObjects(document).filter(source => {
+              try { return succeeded.has(evaluationAccountOwner(convertSession(source.value).cpa)); } catch { return false; }
+            }).map(source => source.path));
+            const prune = (value, path = '$') => {
+              if (removed.has(path)) return undefined;
+              if (Array.isArray(value)) return value.map((child, index) => prune(child, `${path}[${index}]`)).filter(child => child !== undefined);
+              if (isPlainObject(value)) return Object.fromEntries(Object.entries(value)
+                .map(([key, child]) => [key, prune(child, `${path}.${key}`)]).filter(([, child]) => child !== undefined));
+              return value;
+            };
+            return prune(document);
+          }).filter(document => document !== undefined);
+          elements.input.value = remaining.map(document => JSON.stringify(document, null, 2)).join('\n');
+        }
+        state.pushRetry = null;
+        for (const operation of state.pushOperations) for (const item of operation.items) {
+          if (item.account && succeeded.has(evaluationAccountOwner({ email: item.account.email || item.account.credentials?.email || item.account.name }))) {
+            item.disabled = true; item.retryable = false; delete item.account;
+          }
+        }
+        syncPushOperationViews();
+        scheduleConvert();
+        updateLoginExportActions();
+        elements.exportLoginSessions.disabled = !state.loginSessionIds.length;
+        await persistBrowserWorkspace(true, true);
+      }
+      return outcomes;
+    } finally {
+      evaluationLogoutBusy = false; protocolLogoutBusy = false;
+      if (isCurrent()) {
+        disabled.forEach(({ node, disabled: value }) => { node.disabled = value; });
+        updateLoginExportActions();
+        elements.exportLoginSessions.disabled = !state.loginSessionIds.length;
+        updatePushControls(); scheduleSessionMonitor();
+      }
+    }
+  }
   const modelEvaluation = initializeModelEvaluation({
     request: pageFetch, isWorkspaceCurrent: workspaceTaskIsCurrent, getHeaders: loginProxyHeaders,
     getEligibility: () => evaluationEligibility,
     getConcurrency: () => taskConcurrency,
-    isPushBusy: () => pushBusy || monitorBusy,
+    isPushBusy: () => pushBusy || monitorBusy || protocolLogoutBusy || selfLeaveBusy || state.logoutInProgress || elements.startProtocolLogin.disabled || elements.resetLoginTotp.disabled,
+    getAccounts: () => state.converted.map(convertedHealthAccount),
+    onLogoutFailed: logoutEvaluationAccounts,
     onPushPassed: async accounts => {
       try { pushSettings('sub2api'); }
       catch (error) {

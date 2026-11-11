@@ -109,8 +109,10 @@
           <div class="evaluation-heading-actions">
             <button class="button button-secondary" id="evaluation-sub2-config" type="button">Sub2API 配置</button>
             <button class="button button-primary" id="evaluation-push-passed" type="button" title="仅推送本轮糖果题答案正确且当前测活通过的账号" disabled>推送答案正确账号到 Sub2API（0）</button>
+            <button class="button button-secondary" id="evaluation-logout-failed" type="button" title="退出本轮糖果题已测试但未答对账号的全部会话；同一邮箱有工作区答对则保留，未测试或已停止的任务不退出" disabled>退出非答案正确账号会话（0）</button>
           </div>
         </header>
+        <p id="evaluation-logout-status" class="status" role="status" hidden></p>
         <div class="evaluation-layout">
           <aside class="evaluation-sidebar" aria-label="测试配置与队列">
             <form id="evaluation-form" autocomplete="off">
