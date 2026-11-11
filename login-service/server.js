@@ -1692,7 +1692,7 @@ export async function startApplication() {
     app,
     port: PORT,
     host: process.env.HOST || '127.0.0.1',
-    ready: Promise.all([runtimeReady, startHttpWorkers()]),
+    ready: Promise.all([runtimeReady, startHttpWorkers(), browserWorkerPool.start()]),
     beforeClose: async () => {
       shutdownState.value = true;
       await closeHttpWorkers();
@@ -1703,6 +1703,7 @@ export async function startApplication() {
     },
   }).catch(async error => {
     await closeHttpWorkers();
+    await browserWorkerPool.close();
     try { sqliteRuntime.db.close(); } catch {}
     throw error;
   });

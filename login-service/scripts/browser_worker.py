@@ -194,6 +194,12 @@ def main():
             timing = lambda stage, duration, outcome: emit({'id': identity, 'event': 'timing',
                 'stage': stage, 'durationMs': duration, 'outcome': outcome})
             try:
+                if request.get('operation') == 'warmup':
+                    runtime.on_event = lambda event, **fields: emit({'id': identity, 'event': 'diagnostic',
+                        'diagnostic': {'event': event, **fields}})
+                    browser = runtime.ensure(timing)
+                    emit({'id': identity, 'ok': True, 'result': {'version': browser.version}})
+                    continue
                 result = run_request(runtime, request, stopped, timing,
                     lambda event, **fields: emit({'id': identity, 'event': 'diagnostic', 'diagnostic': {'event': event, **fields}}))
                 # No cookies/storage state leave this helper; each task has already closed its context.

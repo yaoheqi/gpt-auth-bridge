@@ -31,6 +31,11 @@ export function getPythonCandidates({ env = process.env, platform = process.plat
   ].map(value => String(value || '').trim()).filter(Boolean))];
 }
 
+export function configuredResidentBrowsers(env = process.env) {
+  const value = String(env.BROWSER_RESIDENT_COUNT ?? '').trim();
+  return Math.min(configuredBrowserConcurrency(env), boundedSetting(value || undefined, 5, 0, 30));
+}
+
 class BrowserWorker {
   constructor(root) { this.root = root; this.tasks = 0; }
 
@@ -147,6 +152,7 @@ class BrowserWorker {
 export class BrowserWorkerPool {
   constructor({ size = configuredBrowserConcurrency(), reuse = browserReuseEnabled(),
     idleMs = browserReuseLimits().idleMs, maxTasks = browserReuseLimits().maxTasks,
+    residentCount = configuredResidentBrowsers(),
     maxPending = taskQueueCapacity(size), queueTimeoutMs = TASK_QUEUE_TIMEOUT_MS, cleanupTimeoutMs = WORKER_CLEANUP_TIMEOUT_MS,
     workerFactory = root => new BrowserWorker(root) } = {}) {
     this.semaphore = createSemaphore(size, { maxPending, queueTimeoutMs });
@@ -154,12 +160,71 @@ export class BrowserWorkerPool {
     this.reuse = reuse;
     this.idleMs = idleMs;
     this.maxTasks = maxTasks;
+    this.residentCount = reuse ? Math.min(size, Math.max(0, Math.floor(residentCount))) : 0;
     this.workerFactory = workerFactory;
     this.workers = new Set();
     this.controller = new AbortController();
     this.completed = 0;
     this.reused = 0;
     this.diagnostics = createBrowserDiagnostics();
+  }
+
+  createWorker(root) {
+    const worker = this.workerFactory(root);
+    worker.onDiagnostic = event => this.diagnostics.record(event);
+    worker.busy = true;
+    this.workers.add(worker);
+    return worker;
+  }
+
+  releaseWorker(worker) {
+    worker.busy = false;
+    worker.idleTimer = setTimeout(() => {
+      const retained = [...this.workers].filter(item => !item.dead && !item.retiring).length;
+      if (this.maintaining && retained <= this.residentCount) return;
+      void this.retire(worker, 'idle').catch(() => {});
+    }, this.idleMs);
+    worker.idleTimer.unref?.();
+  }
+
+  // Warm real Chromium processes without navigating to an upstream service.
+  async start() {
+    this.controller.signal.throwIfAborted();
+    if (!this.residentCount) return;
+    if (!this.maintaining) {
+      this.maintaining = true;
+      this.maintenanceTimer = setInterval(() => { void this.maintain().catch(() => {}); }, 1000);
+      this.maintenanceTimer.unref?.();
+    }
+    await this.maintain();
+  }
+
+  maintain() {
+    if (this.maintenance) return this.maintenance;
+    if (this.controller.signal.aborted) return Promise.resolve();
+    this.maintenance = (async () => {
+      await Promise.all([...this.workers].filter(worker => worker.dead || worker.retiring)
+        .map(worker => this.retire(worker)));
+      const missing = Math.max(0, this.residentCount - this.workers.size);
+      const results = await Promise.allSettled(Array.from({ length: missing }, async () => {
+        const release = await this.semaphore.acquire({ signal: this.controller.signal });
+        let worker;
+        try {
+          this.controller.signal.throwIfAborted();
+          if (this.workers.size >= this.residentCount) return;
+          worker = this.createWorker(ROOT);
+          await worker.run({ operation: 'warmup' }, { signal: this.controller.signal, timeoutMs: 30000 });
+          this.controller.signal.throwIfAborted();
+          this.releaseWorker(worker);
+        } catch (error) {
+          if (worker) await this.retire(worker, 'failed');
+          throw error;
+        } finally { release(); }
+      }));
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
+    })().finally(() => { this.maintenance = null; });
+    return this.maintenance;
   }
 
   async retire(worker, reason = 'stale') {
@@ -196,9 +261,7 @@ export class BrowserWorkerPool {
       combined.throwIfAborted();
       worker = [...this.workers].find(item => !item.busy && !item.dead && item.root === root);
       if (!worker) {
-        worker = this.workerFactory(root);
-        worker.onDiagnostic = event => this.diagnostics.record(event);
-        this.workers.add(worker);
+        worker = this.createWorker(root);
       }
       unregisterCleanup = registerRequestCleanup(() => this.retire(worker, 'request_cleanup'));
       worker.busy = true;
@@ -228,9 +291,7 @@ export class BrowserWorkerPool {
             }
           }
           else {
-            worker.busy = false;
-            worker.idleTimer = setTimeout(() => { void this.retire(worker, 'idle').catch(() => {}); }, this.idleMs);
-            worker.idleTimer.unref?.();
+            this.releaseWorker(worker);
           }
         }
       } finally { unregisterCleanup(); release(); }
@@ -239,13 +300,16 @@ export class BrowserWorkerPool {
 
   stats() {
     return { ...this.semaphore.stats(), reuseEnabled: this.reuse, workers: this.workers.size,
+      residentCount: this.residentCount,
       completed: this.completed, reused: this.reused, idleMs: this.idleMs, maxTasks: this.maxTasks,
       diagnostics: this.diagnostics.snapshot() };
   }
 
   async close() {
     this.controller.abort();
+    clearInterval(this.maintenanceTimer);
     await Promise.allSettled([...this.workers].map(worker => this.retire(worker, 'shutdown')));
+    await this.maintenance?.catch(() => {});
   }
 }
 
