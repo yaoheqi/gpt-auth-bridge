@@ -8,6 +8,66 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserWorkerPool } from '../lib/browser-worker-pool.js';
 import { withAccountTimings } from '../lib/stage-timing.js';
 
+test('resident browsers warm without upstream traffic, survive idle, and replace exited workers', { timeout: 60000 }, async () => {
+  const pool = new BrowserWorkerPool({ size: 2, reuse: true, residentCount: 2, idleMs: 50 });
+  try {
+    await pool.start();
+    assert.equal(pool.stats().workers, 2);
+    assert.equal(pool.stats().diagnostics.counts.browser_started, 2);
+    assert.equal(pool.stats().completed, 0, 'warmup must not count as account validation');
+    const workers = [...pool.workers];
+    await delay(100);
+    assert.deepEqual([...pool.workers], workers);
+    workers[0].child.kill();
+    for (let i = 0; i < 100 && (pool.workers.has(workers[0]) || pool.stats().diagnostics.counts.browser_started < 3); i++) await delay(100);
+    assert.equal(pool.workers.has(workers[0]), false);
+    assert.equal(pool.stats().workers, 2);
+    assert.equal(pool.stats().diagnostics.counts.browser_started, 3);
+    assert.equal(pool.stats().active, 0);
+  } finally { await pool.close(); }
+  assert.equal(pool.workers.size, 0);
+});
+
+test('resident maintenance shares capacity and shrinks burst workers back to its floor', async () => {
+  let running = 0, peak = 0;
+  const pool = new BrowserWorkerPool({ size: 3, reuse: true, residentCount: 1, idleMs: 20,
+    workerFactory: root => ({ root, tasks: 0,
+      async run(_payload, { signal }) {
+        peak = Math.max(peak, ++running);
+        try { await delay(15, null, { signal }); return {}; } finally { running--; }
+      },
+      async stop() { this.dead = true; },
+    }),
+  });
+  try {
+    await Promise.all([pool.start(), ...Array.from({ length: 8 }, () => pool.run({}))]);
+    assert.ok(peak <= 3);
+    assert.equal(pool.stats().completed, 8);
+    await delay(100);
+    assert.equal(pool.workers.size, 1);
+    await pool.retire([...pool.workers][0], 'max_tasks');
+    await pool.maintain();
+    assert.equal(pool.workers.size, 1);
+    assert.equal(pool.stats().active, 0);
+  } finally { await pool.close(); }
+  assert.equal(pool.workers.size, 0);
+});
+
+test('closing during resident warmup cancels startup and leaves no workers', async () => {
+  const pool = new BrowserWorkerPool({ size: 2, reuse: true, residentCount: 2,
+    workerFactory: root => ({ root, tasks: 0,
+      async run(_payload, { signal }) { await delay(10000, null, { signal }); },
+      async stop() { this.dead = true; },
+    }),
+  });
+  const starting = assert.rejects(pool.start(), { name: 'AbortError' });
+  while (!pool.workers.size) await delay(1);
+  await pool.close();
+  await starting;
+  assert.equal(pool.workers.size, 0);
+  assert.equal(pool.stats().active, 0);
+});
+
 test('browser reuse preserves process but isolates cookies, storage, proxy and user agent', { timeout: 60000 }, async t => {
   const fixture = spawn(process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), [
     fileURLToPath(new URL('../../tests/browser-worker-fixture.py', import.meta.url)),

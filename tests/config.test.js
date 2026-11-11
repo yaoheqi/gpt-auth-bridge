@@ -7,7 +7,7 @@ import { loadApplicationEnv } from '../src/config.js';
 import { loadCliEnv } from '../login-service/scripts/cli-env.mjs';
 import { parseArgs } from '../login-service/scripts/session-health.mjs';
 import { clampOauthBatchConcurrency, configuredTaskConcurrency, configuredBrowserConcurrency } from '../login-service/lib/batch-concurrency.js';
-import { browserReuseLimits, browserReuseEnabled } from '../login-service/lib/browser-worker-pool.js';
+import { browserReuseLimits, browserReuseEnabled, configuredResidentBrowsers } from '../login-service/lib/browser-worker-pool.js';
 import { resolveProtocolLoginConcurrency } from '../login-service/src/services/job-runner.js';
 
 test('server and CLI share root dotenv precedence for active settings', async () => {
@@ -55,6 +55,11 @@ test('browser settings follow global concurrency and retain bounded reuse limits
     [{ TASK_CONCURRENCY: 'invalid' }, 10], [{ TASK_CONCURRENCY: 0 }, 10], [{ TASK_CONCURRENCY: 99 }, 30],
   ]) assert.equal(configuredBrowserConcurrency(env), expected);
   assert.equal(browserReuseEnabled({}), false);
+  assert.equal(configuredResidentBrowsers({}), 5);
+  assert.equal(configuredResidentBrowsers({ TASK_CONCURRENCY: 2 }), 2);
+  assert.equal(configuredResidentBrowsers({ BROWSER_RESIDENT_COUNT: '0' }), 0);
+  assert.equal(configuredResidentBrowsers({ BROWSER_RESIDENT_COUNT: 'invalid' }), 5);
+  assert.equal(configuredResidentBrowsers({ TASK_CONCURRENCY: 20, BROWSER_RESIDENT_COUNT: 99 }), 20);
   assert.deepEqual(browserReuseLimits({}), { idleMs: 60000, maxTasks: 20 });
   assert.deepEqual(browserReuseLimits({ BROWSER_REUSE_IDLE_MS: 2000, BROWSER_REUSE_MAX_TASKS: 3 }), { idleMs: 2000, maxTasks: 3 });
   assert.deepEqual(browserReuseLimits({ BROWSER_REUSE_IDLE_MS: 999999, BROWSER_REUSE_MAX_TASKS: 999 }), { idleMs: 300000, maxTasks: 100 });
