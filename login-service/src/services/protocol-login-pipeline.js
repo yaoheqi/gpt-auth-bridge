@@ -1,4 +1,4 @@
-import { extractBusinessWorkspaceIds, readWorkspaceSessionPayload } from '../../lib/business-workspace.js';
+import { extractBusinessWorkspaceIds, readWorkspaceSessionPayload, resolveWorkspaceSelection } from '../../lib/business-workspace.js';
 import { protocolLoginCredentialIssue } from '../domain/accounts/account-domain.js';
 import { withAccountTimings, measureStage } from '../../lib/stage-timing.js';
 import { accountQueueDuration } from '../../lib/task-concurrency.js';
@@ -13,7 +13,26 @@ export function normalizeProtocolPipelineMode(value) {
 
 export async function runProtocolLoginPipelineAccount(account, options) {
   const identity = { id: account.id, email: account.email };
-  const result = await withAccountTimings(() => executeProtocolLogin(account, options), {
+  const result = await withAccountTimings(async () => {
+    const limit = options.requireNonPersonal && !protocolLoginCredentialIssue(account) ? 3 : 1;
+    for (let attempts = 1; attempts <= limit; attempts++) {
+      requestSignal()?.throwIfAborted();
+      const current = await executeProtocolLogin(account, options);
+      if (!options.requireNonPersonal) return current;
+      current.attempts = attempts;
+      const acquired = normalizeProtocolPipelineMode(options.workspaceMode) === 'session'
+        ? current.nonPersonalOk : current.businessSuccess > 0;
+      if (acquired || current.terminalReason || current.validationFailure) return current;
+      current.ok = false;
+      if (normalizeProtocolPipelineMode(options.workspaceMode) === 'session') current.sessionOk = false;
+      current.error ||= '未获取到非个人工作区';
+      if (attempts === limit) {
+        current.error = `尝试 ${attempts} 次后仍未获取到非个人工作区：${current.error}`;
+        return current;
+      }
+      options.hooks?.log?.({ ...identity, phase: 'protocol', level: 'warn', msg: `未获取到非个人工作区，重新获取（第 ${attempts + 1}/3 次）` });
+    }
+  }, {
     queueMs: accountQueueDuration(),
     onTiming: timing => options.hooks?.timing?.({ ...identity, ...timing }),
   });
@@ -22,7 +41,7 @@ export async function runProtocolLoginPipelineAccount(account, options) {
 }
 
 async function executeProtocolLogin(account, {
-  workspaceMode, runSessionLogin, runAllWorkspaces, hooks = {},
+  workspaceMode, requireNonPersonal = false, runSessionLogin, runAllWorkspaces, hooks = {},
 }) {
   const mode = normalizeProtocolPipelineMode(workspaceMode);
   const identity = { id: account.id, email: account.email };
@@ -34,14 +53,16 @@ async function executeProtocolLogin(account, {
     const issue = protocolLoginCredentialIssue(account);
     if (issue) throw new Error(issue);
     if (mode === 'session') {
-      const session = await runSessionLogin(account, { onLog: onLog('protocol') });
+      const session = await runSessionLogin(account, { requireNonPersonal, onLog: onLog('protocol') });
       result = {
         ok: Boolean(session.ok), phase: session.ok ? 'done' : 'protocol',
         sessionOk: Boolean(session.ok), personalOk: false, businessSuccess: 0, businessErrors: [],
+        nonPersonalOk: Boolean(session.nonPersonalOk),
         ...(!session.ok ? { error: session.error || session.detail || '协议登录失败', ...validationFailureFields(session) } : {}),
       };
     } else {
       result = await runAllWorkspaces(account, {
+        requireNonPersonal,
         onLog: data => onLog(data.phase || 'codex')(data),
         onPhase: current => hooks.phase?.({ ...identity, phase: current }),
       });
@@ -62,21 +83,30 @@ export async function runAllWorkspaceCodexAuth({
   const result = { ok: false, phase: 'codex', sessionOk: false, personalOk: false, businessTotal: 0, businessSuccess: 0, businessErrors: [] };
   try {
     onPhase('codex');
-    const personal = await flow.run();
-    if (!personal?.refresh_token) throw new Error('Codex 授权未返回个人 refresh_token');
-    await persistPersonal(personal);
-    result.personalOk = true;
+    const first = await flow.run();
+    if (!first?.refresh_token) throw new Error('Codex 授权未返回 refresh_token');
     const storage = await flow.exportCookieStorageState();
-    await persistCookies(storage);
-    // Capture the catalog before workspace selection consumes/changes cookies.
-    // An absent catalog is a discovery error, not "zero Business workspaces".
+    // Redirect-only grants can still have their catalog in the auth cookies.
     const catalog = flow.discoveredWorkspaces || readWorkspaceSessionPayload(JSON.parse(storage).cookies).workspaces;
     const workspaceIds = extractBusinessWorkspaceIds({ session_json: { workspaces: catalog } });
+    const firstId = first.account_id || flow.selectedWorkspaceId || resolveWorkspaceSelection({ workspaces: catalog }, flow.workspaceSelection);
+    if (!catalog.some(workspace => String(workspace.id) === firstId)) throw new Error('授权结果不属于已发现的工作区');
+    const firstIsBusiness = workspaceIds.includes(firstId);
+    if (firstIsBusiness) {
+      await persistBusiness(first, firstId);
+      result.businessSuccess = 1;
+    } else {
+      if (flow.requireNonPersonal) throw new Error('未获取到非个人工作区');
+      await persistPersonal(first);
+      result.personalOk = true;
+    }
+    await persistCookies(storage);
     result.businessTotal = workspaceIds.length;
     result.phase = 'business';
     onPhase('business');
     flow.log(`发现 ${workspaceIds.length} 个 Business 工作区，复用本次 Codex 登录逐个授权`);
     for (const workspaceId of workspaceIds) {
+      if (firstIsBusiness && workspaceId === firstId) continue;
       try {
         flow.workspaceSelection = { mode: 'id', workspaceId };
         flow.forbidPhoneChallenge = true;

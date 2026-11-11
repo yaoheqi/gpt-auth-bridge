@@ -108,7 +108,14 @@ export function resolveWorkspaceSelection(payload, selection = { mode: 'personal
     if (workspaces.some(item => String(item?.id || '') === wanted)) return wanted;
     const error = new Error(`当前会话不是 Business workspace ${wanted} 的成员`); error.code = 'BUSINESS_NOT_MEMBER'; throw error;
   }
-  const personal = workspaces.find(item => item?.kind === 'personal');
+  const personal = workspaces.find(item => String(item?.kind || item?.type || item?.structure || '').trim().toLowerCase() === 'personal');
+  if (selection?.mode === 'non-personal' || (selection?.mode === 'prefer-personal' && !personal?.id)) {
+    const id = extractBusinessWorkspaceIds({ session_json: { workspaces } })[0];
+    if (id) return id;
+    const error = new Error('当前会话未发现非个人工作区');
+    error.code = 'NON_PERSONAL_WORKSPACE_MISSING';
+    throw error;
+  }
   if (!personal?.id) throw new Error('当前会话未发现 personal workspace');
   return String(personal.id);
 }

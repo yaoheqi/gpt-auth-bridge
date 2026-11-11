@@ -1,8 +1,44 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeProtocolPipelineMode, runProtocolLoginPipelineAccount, runAllWorkspaceCodexAuth } from '../src/services/protocol-login-pipeline.js';
+import { executions } from '../src/services/request-scope.js';
 
 const account = { id: 'account-1', email: 'fixture@example.com', password: 'fixture-password', two_factor_secret: 'JBSWY3DPEHPK3PXP' };
+
+test('cancelled non-personal acquisition never starts another attempt', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await assert.rejects(executions.run({ signal: controller.signal }, () => runProtocolLoginPipelineAccount(account, {
+    workspaceMode: 'all', requireNonPersonal: true,
+    runAllWorkspaces: async () => { calls++; controller.abort(); throw controller.signal.reason; },
+  })), { name: 'AbortError' });
+  assert.equal(calls, 1);
+});
+
+test('required non-personal workspace retries both modes at most three times and stops on success', async () => {
+  for (const workspaceMode of ['session', 'all']) {
+    for (const succeedsAt of [2, 3, 4]) {
+      let calls = 0;
+      const run = async (_account, options) => {
+        assert.equal(options.requireNonPersonal, true);
+        calls++;
+        return { ok: calls === succeedsAt, nonPersonalOk: calls === succeedsAt, businessSuccess: calls === succeedsAt ? 1 : 0, error: '未获取到非个人工作区' };
+      };
+      const result = await runProtocolLoginPipelineAccount(account, { workspaceMode, requireNonPersonal: true, runSessionLogin: run, runAllWorkspaces: run });
+      assert.equal(calls, Math.min(succeedsAt, 3));
+      assert.equal(result.attempts, calls);
+      assert.equal(result.ok, succeedsAt <= 3);
+    }
+  }
+});
+
+test('required non-personal workspace stops immediately on definitive credential rejection', async () => {
+  let calls = 0;
+  const result = await runProtocolLoginPipelineAccount(account, { workspaceMode: 'all', requireNonPersonal: true,
+    runAllWorkspaces: async () => { calls++; throw new Error('invalid_username_or_password'); } });
+  assert.equal(calls, 1);
+  assert.equal(result.terminalReason, 'password_invalid');
+});
 
 test('both login modes return terminal reasons for explicit credential rejections only', async () => {
   for (const workspaceMode of ['session', 'all']) {
@@ -139,7 +175,7 @@ test('personal auth failure and missing workspace catalog fail explicitly and re
     const result = await runAllWorkspaceCodexAuth(options);
     assert.equal(result.ok, false);
     assert.equal(result.sessionOk, false);
-    assert.equal(result.personalOk, failure !== 'login');
+    assert.equal(result.personalOk, failure === 'persistence');
     assert.equal(result.businessSuccess, 0);
     assert.equal(calls.at(-1), 'dispose');
     assert.ok(result.error);

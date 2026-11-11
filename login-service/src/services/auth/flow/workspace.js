@@ -29,6 +29,16 @@ export function createWorkspaceMethods({
   sleep,
 } = {}) {
   return {
+    assertNonPersonalWorkspace(accountId = '') {
+      if (!this.requireNonPersonal) return;
+      const workspace = this.discoveredWorkspaces?.find(item => String(item.id) === this.selectedWorkspaceId);
+      const kind = String(workspace?.kind || workspace?.type || workspace?.structure || '').trim().toLowerCase();
+      if (!workspace || kind === 'personal' || (accountId && accountId !== this.selectedWorkspaceId)) {
+        const error = new Error('未获取到非个人工作区，已停止授权');
+        error.code = 'NON_PERSONAL_WORKSPACE_MISSING';
+        throw error;
+      }
+    },
     async resolveWorkspaceID(consentHtml = '') {
       const pagePayload = readWorkspacePagePayload(consentHtml);
       if (pagePayload) {
@@ -77,6 +87,8 @@ export function createWorkspaceMethods({
       }
       this.log(`工作区授权页: HTTP ${consentResponse.status} path=${this.pathOf(landedUrl)}`);
       const workspaceID = await this.resolveWorkspaceID(await consentResponse.text());
+      this.selectedWorkspaceId = workspaceID;
+      this.assertNonPersonalWorkspace();
       const response = await this.fetch(AUTH_WORKSPACE_SELECT_URL, {
         method: 'POST',
         redirect: 'manual',

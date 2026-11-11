@@ -74,7 +74,7 @@ export function registerProtocolPipelineRoutes(app, { requireAdmin, ensureDataba
           return result;
         }
         const work = () => runProtocolLoginPipelineAccount(account, {
-          workspaceMode, hooks: { ...hooks, done: undefined },
+          workspaceMode, requireNonPersonal: req.body?.requireNonPersonal === true, hooks: { ...hooks, done: undefined },
           runSessionLogin: (current, options) => runSessionHealthCheckForAccount(current, {
             reloginOnInvalid: true, forceRelogin: true, loginOnly: true,
             ...options, ...requestNetwork,

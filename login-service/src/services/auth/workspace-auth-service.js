@@ -14,7 +14,7 @@ export function createWorkspaceAuthService({
   protocolLoginCredentialIssue = defaultProtocolLoginCredentialIssue,
   runAllWorkspaceCodexAuth = defaultRunAllWorkspaceCodexAuth,
 } = {}) {
-  async function runAllWorkspaceCodexAuthForAccount(account, { onLog, onPhase, ...network } = {}) {
+  async function runAllWorkspaceCodexAuthForAccount(account, { onLog, onPhase, requireNonPersonal = false, ...network } = {}) {
     const issue = protocolLoginCredentialIssue(account);
     if (issue) throw new Error(issue);
     let phase = 'codex';
@@ -24,6 +24,7 @@ export function createWorkspaceAuthService({
       // All-workspace RT starts at Codex OAuth with password/TOTP. Neither a
       // ChatGPT Web Session nor previously saved cookies are prerequisites.
       phoneMode: 'sms', reuseStoredSession: false, requireStoredSession: false,
+      workspaceSelection: { mode: requireNonPersonal ? 'non-personal' : 'prefer-personal' },
       humanPacingEnabled: false, ...accountRequestNetwork(account, network),
     });
     return runAllWorkspaceCodexAuth({

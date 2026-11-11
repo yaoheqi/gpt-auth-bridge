@@ -24,6 +24,27 @@ function runner({ probe, relogin, overrides = {} }) {
   return createSessionHealthRunner(bindings).runSessionHealthCheckForAccount;
 }
 
+test('required non-personal login delegates retries to the pipeline without multiplying attempts', async () => {
+  for (const ok of [false, true]) {
+    let logins = 0;
+    const run = runner({
+      relogin: async (_account, options) => {
+        assert.equal(options.requireNonPersonal, true);
+        logins++;
+        if (!ok) throw new Error('未获取到非个人工作区');
+        return { accessToken: 'team-session', nonPersonalOk: true };
+      },
+      probe: () => assert.fail('fresh Session must not be probed'),
+      overrides: { getSessionReloginMaxAttempts: () => 3, isRetryableSessionReloginError: () => true,
+        sleep: () => assert.fail('pipeline owns retries') },
+    });
+    const result = await run({ id: 'fixture' }, { forceRelogin: true, loginOnly: true, requireNonPersonal: true });
+    assert.equal(result.ok, ok);
+    assert.equal(Boolean(result.nonPersonalOk), ok);
+    assert.equal(logins, 1);
+  }
+});
+
 test('validation failures keep their metadata and never replay the full login', async () => {
   for (const code of ['BROWSER_CLOSED', 'VALIDATION_TIMEOUT', 'VALIDATION_CONTEXT_MISMATCH']) {
     let logins = 0;

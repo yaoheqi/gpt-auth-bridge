@@ -54,6 +54,7 @@ export function createSessionHealthRunner({
     reloginOnInvalid = true,
     forceRelogin = false,
     loginOnly = false,
+    requireNonPersonal = false,
     onLog,
     proxyPool,
     directWhenProxyPoolEmpty = false,
@@ -218,7 +219,7 @@ export function createSessionHealthRunner({
       await clearAuthStateForFreshLogin(account.id, { status: '准备重新登录，旧认证状态已清理' });
 
       try {
-        const maxAttempts = Math.min(3, getSessionReloginMaxAttempts());
+        const maxAttempts = requireNonPersonal ? 1 : Math.min(3, getSessionReloginMaxAttempts());
         const configuredPool = proxyPool !== undefined
           ? String(proxyPool || '').trim()
           : String(getProtocolSettings().proxyPool || '').trim();
@@ -248,6 +249,7 @@ export function createSessionHealthRunner({
             // HTTP dispatcher and (when configured) proxy session.
             relogin = await reloginChatGptWebSessionForHealth(account, {
               ...network,
+              requireNonPersonal,
               onLog: (entry) => {
                 logs.push(entry);
                 if (typeof onLog === 'function') onLog(entry);
@@ -286,6 +288,7 @@ export function createSessionHealthRunner({
           health: SESSION_HEALTH.ALIVE_REFRESHED,
           detail: 'relogin ok',
           refreshed: true,
+          nonPersonalOk: Boolean(relogin.nonPersonalOk),
           hasSession: true,
         });
       } catch (error) {

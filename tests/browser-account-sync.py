@@ -179,7 +179,7 @@ def check_account_sync(browser, url):
         page.locator('.top-nav [data-format="protocol-login"]').click()
         expect(page.locator('#login-mode-description')).to_contain_text('直接使用 Codex OAuth')
         expect(page.locator('.login-step:visible .login-step-label')).to_have_text([
-            '连接 Codex', '输入账号', '验证密码', '验证 2FA', '获取个人 RT', '授权工作区', '完成'])
+            '连接 Codex', '输入账号', '验证密码', '验证 2FA', '获取首个 RT', '授权工作区', '完成'])
         page.locator('input[name="login-workspace-mode"][value="session"]').check()
         expect(page.locator('#login-mode-description')).to_contain_text('登录 ChatGPT Web')
         expect(page.locator('.login-step:visible .login-step-label')).to_have_text([

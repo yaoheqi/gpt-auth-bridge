@@ -39,6 +39,7 @@ export function createSessionLoginService({
 } = {}) {
   async function reloginChatGptWebSessionForHealth(account, {
     onLog,
+    requireNonPersonal = false,
     proxyPool,
     directWhenProxyPoolEmpty = false,
   } = {}) {
@@ -71,6 +72,7 @@ export function createSessionLoginService({
         storageState: sessionResult.storageState,
         proxyUrl: sessionResult.proxyUrl,
         directEgress: Boolean(sessionResult.directEgress),
+        nonPersonalOk: Boolean(sessionResult.nonPersonalOk),
         logs,
       };
     };
@@ -89,6 +91,7 @@ export function createSessionLoginService({
     }
     const flow = new OpenAIJsonAuthFlow(loginAccount, sse, {
       phoneMode: 'sms',
+      workspaceSelection: { mode: requireNonPersonal ? 'non-personal' : 'prefer-personal' },
       humanPacingEnabled: false,
       proxyPool,
       directWhenProxyPoolEmpty,

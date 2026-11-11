@@ -8,7 +8,7 @@ import {
   normalizeAuthContinueUrl as defaultNormalizeAuthContinueUrl,
 } from '../../../../lib/openai-auth-urls.js';
 import { Cookie as defaultCookie } from 'tough-cookie';
-import { firstNonEmpty as defaultFirstNonEmpty } from '../../../../lib/jwt-utils.js';
+import { firstNonEmpty as defaultFirstNonEmpty, decodeJwtPayload } from '../../../../lib/jwt-utils.js';
 import { isInitialAuthEgressBlock as defaultIsInitialAuthEgressBlock } from '../../../../lib/proxy-config.js';
 import { parseOpenAiAuthErrorUrl as defaultParseOpenAiAuthErrorUrl } from '../../../lib/openai-auth-error.js';
 import { randomUUID as defaultRandomUUID } from 'crypto';
@@ -354,14 +354,20 @@ export function createWebSessionMethods({
       this.assertPasswordTotpCredentials();
       this.logProtocolHardening();
       this.log('协议登录 ChatGPT Web（邮箱 + 密码 + TOTP）');
+      this.selectedWorkspaceId = '';
       const started = await this.startChatGptWebSignIn();
       let continueURL = started.continueUrl;
       const advanced = await this.advanceAuthStep(continueURL, { phase: 'chatgpt' });
       continueURL = typeof advanced === 'string' ? advanced : String(advanced?.continueUrl || '');
+      this.assertNonPersonalWorkspace();
       this.log(`登录完成，跟随到 ChatGPT Session: ${this.pathOf(continueURL) || continueURL}`);
       const { accessToken, session } = await this.followChatGptWebSession(continueURL);
+      if (this.requireNonPersonal) {
+        const auth = decodeJwtPayload(accessToken)['https://api.openai.com/auth'] || {};
+        for (const id of [session?.account?.id, auth.chatgpt_account_id, auth.account_id]) this.assertNonPersonalWorkspace(String(id || ''));
+      }
       const storageState = await this.exportCookieStorageState();
-      return { accessToken, session, storageState };
+      return { accessToken, session, storageState, nonPersonalOk: Boolean(this.requireNonPersonal) };
     },
   };
 }

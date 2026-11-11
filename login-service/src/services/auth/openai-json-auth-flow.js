@@ -69,7 +69,8 @@ export function createOpenAIJsonAuthFlow(dependencies = {}) {
       this.humanPacingEnabled = typeof humanPacingEnabled === 'boolean'
         ? humanPacingEnabled
         : false;
-      const workspaceMode = workspaceSelection?.mode === 'id' ? 'id' : 'personal';
+      const workspaceMode = ['id', 'prefer-personal', 'non-personal'].includes(workspaceSelection?.mode) ? workspaceSelection.mode : 'personal';
+      this.requireNonPersonal = workspaceMode === 'non-personal';
       this.workspaceSelection = { mode: workspaceMode, workspaceId: workspaceMode === 'id' ? String(workspaceSelection?.workspaceId || '').trim() : '' };
       if (workspaceMode === 'id' && !this.workspaceSelection.workspaceId) throw new Error('Business workspace ID 不能为空');
       this.smsProvider = createSmsBowerClient();

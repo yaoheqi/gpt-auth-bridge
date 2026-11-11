@@ -235,6 +235,7 @@ export function createOAuthNavigationMethods({
         await this.resetAuthSession();
         if (this.reuseStoredSession) await this.importStoredCookieStorageState();
       }
+      this.selectedWorkspaceId = '';
       const started = await this.startOAuthSession({
         useLoginHint: true,
         prompt: preserveAuthSession || this.reuseStoredSession ? '' : 'login',
@@ -313,6 +314,7 @@ export function createOAuthNavigationMethods({
     },
 
     async exchangeCodeForToken(code) {
+      this.assertNonPersonalWorkspace();
       let lastError = '';
       for (const tokenURL of AUTH_OAUTH_TOKEN_URLS) {
         const body = buildAuthorizationCodeTokenBody(code, this.codeVerifier, OPENAI_CODEX_REDIRECT_URI);
@@ -330,7 +332,9 @@ export function createOAuthNavigationMethods({
           continue;
         }
         const payload = await response.json();
-        return normalizeOpenAIAuthRecord(this.account.email, payload);
+        const record = normalizeOpenAIAuthRecord(this.account.email, payload);
+        if (this.requireNonPersonal && record.account_id !== this.selectedWorkspaceId) throw new Error('返回的 RT 不属于所选非个人工作区');
+        return record;
       }
       throw new Error(`Code换Token失败: ${lastError}`);
     },

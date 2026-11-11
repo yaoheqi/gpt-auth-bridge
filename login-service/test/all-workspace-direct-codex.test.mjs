@@ -9,8 +9,12 @@ import { runProtocolLoginPipelineAccount } from '../src/services/protocol-login-
 const jwt = value => `header.${Buffer.from(JSON.stringify(value)).toString('base64url')}.signature`;
 const consent = `${urls.AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`;
 
-for (const hasStoredWebSession of [false, true]) {
-  test(`all-workspace entry authenticates directly with Codex and reuses that login (stored Web Session: ${hasStoredWebSession})`, async () => {
+for (const scenario of ['normal', 'stored', 'no-personal', 'non-personal', 'missing-team', 'appears-second']) {
+  const hasStoredWebSession = scenario === 'stored';
+  const requireNonPersonal = ['non-personal', 'missing-team', 'appears-second'].includes(scenario);
+  const expected = scenario === 'missing-team' ? [] : scenario === 'no-personal' || requireNonPersonal ? ['team-one', 'team-two'] : ['personal', 'team-one', 'team-two'];
+  const attempts = scenario === 'missing-team' ? 3 : scenario === 'appears-second' ? 2 : 1;
+  test(`all-workspace entry authenticates directly with Codex and reuses that login (${scenario})`, async () => {
     const account = { id: 'fixture', email: 'fixture@example.com', password: 'fixture-password', two_factor_secret: 'JBSWY3DPEHPK3PXP',
       ...(hasStoredWebSession ? { session_access_token: 'old-web-token', storage_state_json: JSON.stringify({ cookies: [
         { name: 'old-web-cookie', value: 'must-not-be-used', domain: 'auth.openai.com', path: '/' },
@@ -29,7 +33,7 @@ for (const hasStoredWebSession of [false, true]) {
         oauthState = url.searchParams.get('state');
         states.push(oauthState);
         challenges.push(url.searchParams.get('code_challenge'));
-        if (states.length === 1) {
+        if (!String(init.headers?.cookie || '').includes('codex-login=verified')) {
           assert.equal(url.searchParams.get('prompt'), 'login');
           headers = { location: '/log-in', 'set-cookie': 'oai-did=fixture-device; Path=/; Secure' };
         } else {
@@ -49,11 +53,14 @@ for (const hasStoredWebSession of [false, true]) {
         headers = { 'set-cookie': 'codex-login=verified; Path=/; Secure' };
         body = JSON.stringify({ continue_url: consent });
       } else if (url.href === consent) {
+        const hideTeams = scenario === 'missing-team' || (scenario === 'appears-second' && preflights === 1);
         body = `<script type="application/json">${JSON.stringify({ loaderData: { clientAuthSession: { workspaces: [
-          { id: 'personal', kind: 'personal' }, { id: 'team-one', kind: 'business' }, { id: 'team-two', kind: 'business' },
+          ...(scenario === 'no-personal' ? [] : [{ id: 'personal', kind: 'personal' }]),
+          ...(hideTeams ? [] : [{ id: 'team-one', kind: 'business' }, { id: 'team-two', kind: 'business' }]),
         ] } } })}</script>`;
       } else if (url.href === urls.AUTH_WORKSPACE_SELECT_URL) {
         selected = JSON.parse(init.body).workspace_id;
+        assert.ok(expected.includes(selected), 'must never select personal in non-personal mode');
         body = JSON.stringify({ continue_url: `${oauth.OPENAI_CODEX_REDIRECT_URI}?code=${selected}&state=${oauthState}` });
       } else if (url.pathname === '/oauth/token') {
         assert.equal(new URLSearchParams(init.body).get('code'), selected);
@@ -83,21 +90,24 @@ for (const hasStoredWebSession of [false, true]) {
       persistOpenAIAuthResult: async (_id, record) => saved.push(record.account_id),
       persistBusinessCodexAuthResult: async (_id, record, workspaceId) => { assert.equal(record.account_id, workspaceId); saved.push(workspaceId); },
     });
-    const result = await runProtocolLoginPipelineAccount(account, { workspaceMode: 'all',
+    const result = await runProtocolLoginPipelineAccount(account, { workspaceMode: 'all', requireNonPersonal,
       runSessionLogin: () => assert.fail('must not run the Web Session service'),
       runAllWorkspaces: service.runAllWorkspaceCodexAuthForAccount,
       hooks: { log: entry => logs.push(entry.msg) },
     });
-    assert.equal(result.ok, true, result.error);
+    assert.equal(result.ok, scenario !== 'missing-team', result.error);
+    if (requireNonPersonal) assert.equal(result.attempts, attempts);
     assert.equal(result.sessionOk, false);
-    assert.equal(result.businessSuccess, 2);
-    assert.deepEqual(saved, ['personal', 'team-one', 'team-two']);
+    assert.equal(result.businessSuccess, scenario === 'missing-team' ? 0 : 2);
+    assert.deepEqual(saved, expected);
+    assert.equal(result.personalOk, expected.includes('personal'));
     assert.equal(requests[0], '/oauth/authorize');
-    assert.equal(requests.filter(path => path === new URL(urls.AUTH_PASSWORD_VERIFY_URL).pathname).length, 1);
-    assert.equal(requests.filter(path => path === new URL(urls.AUTH_MFA_VERIFY_URL).pathname).length, 1);
-    assert.equal(new Set(states).size, 3);
-    assert.equal(new Set(challenges).size, 3);
-    assert.equal(preflights, 1);
+    assert.equal(requests.filter(path => path === new URL(urls.AUTH_PASSWORD_VERIFY_URL).pathname).length, attempts);
+    assert.equal(requests.filter(path => path === new URL(urls.AUTH_MFA_VERIFY_URL).pathname).length, attempts);
+    const grants = scenario === 'missing-team' ? 3 : expected.length + attempts - 1;
+    assert.equal(new Set(states).size, grants);
+    assert.equal(new Set(challenges).size, grants);
+    assert.equal(preflights, attempts);
     assert.ok(transports.every(item => item.disposed));
     assert.doesNotMatch(logs.join('\n'), /接码完成|阶段2\/2|ChatGPT Web：/);
   });

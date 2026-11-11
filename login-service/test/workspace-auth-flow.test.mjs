@@ -56,6 +56,56 @@ function flowWithTransport(transport = async url => response(url)) {
   return flow;
 }
 
+test('Web login supports a team-only catalog and strict mode never enters personal', async () => {
+  for (const strict of [false, true]) {
+    for (const teamAvailable of [false, true]) {
+      if (!strict && !teamAvailable) continue;
+      const selected = [];
+      let followed = false;
+      const flow = flowWithTransport(async (url, options = {}) => {
+        if (options.method === 'POST') {
+          selected.push(JSON.parse(options.body).workspace_id);
+          return response(url, { body: JSON.stringify({ continue_url: 'https://chatgpt.com/' }) });
+        }
+        return response(url, { body: `<script type="application/json">${JSON.stringify({ workspaces: [
+          ...(strict ? [{ id: 'personal-id', kind: 'personal' }] : []),
+          ...(teamAvailable ? [{ id: 'business-id', kind: 'business' }] : []),
+        ] })}</script>` });
+      });
+      flow.requireNonPersonal = strict;
+      flow.workspaceSelection = { mode: strict ? 'non-personal' : 'prefer-personal' };
+      flow.logProtocolHardening = () => {};
+      flow.startChatGptWebSignIn = async () => ({ continueUrl: CONSENT });
+      flow.followChatGptWebSession = async () => { followed = true; return { accessToken: 'team-session', session: {} }; };
+      if (teamAvailable) {
+        const result = await flow.loginChatGptWebWithPasswordTotp();
+        assert.equal(result.nonPersonalOk, strict);
+        assert.deepEqual(selected, ['business-id']);
+        assert.equal(followed, true);
+        if (strict) {
+          flow.followChatGptWebSession = async () => ({ accessToken: 'fixture', session: { account: { id: 'personal-id' } } });
+          await assert.rejects(flow.loginChatGptWebWithPasswordTotp(), /未获取到非个人工作区/);
+        }
+      } else {
+        await assert.rejects(flow.loginChatGptWebWithPasswordTotp(), /未发现非个人工作区/);
+        assert.deepEqual(selected, []);
+        assert.equal(followed, false);
+      }
+    }
+  }
+});
+
+test('strict workspace selection rejects automatic callbacks before token exchange or entering ChatGPT', async () => {
+  const flow = flowWithTransport(() => assert.fail('must reject before network access'));
+  flow.requireNonPersonal = true;
+  flow.workspaceSelection = { mode: 'non-personal' };
+  flow.logProtocolHardening = () => {};
+  flow.startChatGptWebSignIn = async () => ({ continueUrl: 'https://chatgpt.com/' });
+  flow.followChatGptWebSession = () => assert.fail('must not enter an unselected workspace');
+  await assert.rejects(flow.loginChatGptWebWithPasswordTotp(), /未获取到非个人工作区/);
+  await assert.rejects(flow.exchangeCodeForToken('fixture'), /未获取到非个人工作区/);
+});
+
 test('MFA does not submit a code after validation context failure', async () => {
   const flow = flowWithTransport(async (url, options) => {
     assert.notEqual(options.method, 'POST');

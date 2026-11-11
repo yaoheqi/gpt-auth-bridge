@@ -168,7 +168,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     retained.loginProgress = [];
     const ids = new Set(['login-proxy-local-port', 'login-proxy-pool', 'sub2api-models', 'sub2api-concurrency',
       'sub2api-load-factor', 'sub2api-priority', 'sub2api-fingerprint-mode', 'download-scope', 'health-filter',
-      'usage-filter', 'sub2api-operation', 'split-scope', 'converter-skip-free']);
+      'usage-filter', 'sub2api-operation', 'split-scope', 'converter-skip-free', 'login-require-non-personal']);
     const names = new Set(['push-target', 'login-proxy-mode', 'login-workspace-mode', 'session-monitor']);
     const fields = browserFields().filter(field => ids.has(field.id) || names.has(field.name)
       || (field.id && document.getElementById(field.id)?.closest('.push-config')));
@@ -264,6 +264,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     pushTarget: document.querySelector('#push-target'),
     pushConverted: document.querySelector('#push-converted'),
     converterSkipFree: document.querySelector('#converter-skip-free'),
+    loginRequireNonPersonal: document.querySelector('#login-require-non-personal'),
+    loginNonPersonalFilter: document.querySelector('#login-non-personal-filter'),
     converterFreeFilter: document.querySelector('#converter-free-filter'),
     converterFreeCount: document.querySelector('#converter-free-count'),
     retryPush: document.querySelector('#retry-push'),
@@ -2090,7 +2092,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
   }
 
-  const LOGIN_STAGES = ["连接 Codex", "输入账号", "验证密码", "验证 2FA", "获取个人 RT", "授权工作区", "完成"];
+  const LOGIN_STAGES = ["连接 Codex", "输入账号", "验证密码", "验证 2FA", "获取首个 RT", "授权工作区", "完成"];
   const SESSION_LOGIN_STAGES = ["连接 ChatGPT", "输入账号", "验证密码", "验证 2FA", "获取 Session"];
   const ACCOUNT_ACTION_STAGES = ["准备账号操作", "输入账号", "验证密码", "验证 2FA", "登录成功", "处理工作区", "完成"];
   function loginStagesForMode(mode) {
@@ -2250,9 +2252,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   }
 
   function updateLoginExportActions() {
-    document.querySelector('#login-mode-description').textContent = getLoginWorkspaceMode() === 'session'
+    document.querySelector('#login-mode-description').textContent = (getLoginWorkspaceMode() === 'session'
       ? '登录 ChatGPT Web 并获取 Session，完成后结束。'
-      : '直接使用 Codex OAuth 验证账号、密码和 2FA；获取个人 RT 后，复用本次登录授权全部工作区。';
+      : '直接使用 Codex OAuth 验证账号、密码和 2FA，复用本次登录获取全部可用工作区 RT。')
+      + (elements.loginRequireNonPersonal.checked ? ' 仅选择非个人工作区，未获取到时自动重新登录，最多尝试三次。' : ' 没有个人工作区时直接使用其他工作区。');
     for (const [key, button, label] of [
       ['selfLeave', elements.selfLeaveWorkspaces, '自踢'],
       ['logoutAll', elements.protocolLogoutAll, '退出全部会话'],
@@ -2283,7 +2286,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   function pendingLoginRetry(lines, workspaceMode) {
     const retry = state.loginRetry;
     if (!retry || !Array.isArray(retry.ids) || !retry.ids.length) return null;
-    if (retry.workspaceMode !== workspaceMode) {
+    if (retry.workspaceMode !== workspaceMode || Boolean(retry.requireNonPersonal) !== elements.loginRequireNonPersonal.checked) {
       clearLoginRetry();
       return null;
     }
@@ -2310,7 +2313,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       .map(item => ({ id: String(item.id), email: String(item.email || '').trim() }))
       .filter((item, index, rows) => rows.findIndex(other => other.id === item.id) === index);
     state.loginRetry = failed.length
-      ? { ids: failed.map(item => item.id), accounts: failed, workspaceMode, inputEmails: loginInputIdentity(lines) }
+      ? { ids: failed.map(item => item.id), accounts: failed, workspaceMode, requireNonPersonal: elements.loginRequireNonPersonal.checked, inputEmails: loginInputIdentity(lines) }
       : null;
     updateLoginExportActions();
   }
@@ -2624,6 +2627,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     elements.pushConverted.classList.toggle('hidden', login || target === 'none' || state.format === 'sub2api-tools');
     const selection = convertedPushSelection();
     elements.converterFreeFilter.classList.toggle('hidden', login || state.format === 'sub2api-tools');
+    elements.loginNonPersonalFilter.classList.toggle('hidden', !login);
+    elements.loginRequireNonPersonal.disabled = monitorBusy || protocolLogoutBusy || elements.startProtocolLogin.disabled;
     elements.converterSkipFree.disabled = pushBusy || monitorBusy || converterFilterSaving;
     elements.converterFreeCount.textContent = converterFilterSaving ? '保存中…' : selection.skippedFree ? `（${selection.skippedFree}）` : '';
     elements.pushConverted.disabled = pushBusy || monitorBusy || converterFilterSaving || target === 'none' || !selection.accounts.length;
@@ -3071,7 +3076,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
                 : data.monitorBusy ? '账号由其他浏览器负责，本轮跳过' : '定时重登失败，稍后重试', { stage: data.ok ? 6 : 0, status: data.ok ? 'success' : 'error' });
             };
             const reloginIds = invalid.map(account => String(account.id));
-            const pipeline = await loginIcloudStream('/api/v2/accounts/protocol-login-pipeline', { ids: reloginIds, workspaceMode: 'all', ...network }, onEvent, controller.signal);
+            const pipeline = await loginIcloudStream('/api/v2/accounts/protocol-login-pipeline', { ids: reloginIds, workspaceMode: 'all', requireNonPersonal: elements.loginRequireNonPersonal.checked, ...network }, onEvent, controller.signal);
             requireCurrentWorkspace(isCurrent);
             const pipelineResults = Array.isArray(pipeline.results) ? pipeline.results : [];
             state.loginLastResponse = pipeline;
@@ -3673,6 +3678,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (monitorBusy || selfLeaveBusy || protocolLogoutBusy || elements.resetLoginTotp.disabled) return;
     const isCurrent = workspaceTaskIsCurrent();
     elements.startProtocolLogin.disabled = true;
+    elements.loginRequireNonPersonal.disabled = true;
     elements.resetLoginTotp.disabled = true;
     elements.protocolLogoutAll.disabled = true;
     elements.selfLeaveWorkspaces.disabled = true;
@@ -3731,6 +3737,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         ids,
         concurrency,
         workspaceMode,
+        requireNonPersonal: elements.loginRequireNonPersonal.checked,
         ...selectedLoginProxyNetwork(),
       }, (name, data) => {
         const record = loginProgressRecord(data);
@@ -3754,7 +3761,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
           if (data.ok) {
             const doneText = workspaceMode === "session"
               ? "协议登录完成，Session 已就绪"
-              : `RT 已就绪：个人 1 个，工作区 ${data.businessSuccess || 0} 个`;
+              : `RT 已就绪：个人 ${data.personalOk ? 1 : 0} 个，工作区 ${data.businessSuccess || 0} 个`;
             appendLoginProgress(record, doneText, { stage: workspaceMode === "session" ? 4 : 6, status: "success" });
           } else {
             const hint = validationFailureHint(data);
@@ -3802,6 +3809,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         elements.protocolLogoutAll.disabled = false;
         elements.selfLeaveWorkspaces.disabled = false;
         elements.importLoginFile.disabled = false;
+        updatePushControls();
         persistBrowserWorkspace(true);
       }
     }
@@ -4200,6 +4208,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     } else monitorNextAt = Date.now() + 60_000;
     persistBrowserWorkspace();
     scheduleSessionMonitor();
+  });
+  elements.loginRequireNonPersonal.addEventListener('change', () => {
+    clearLoginRetry(); updateLoginExportActions(); persistBrowserWorkspace();
   });
   elements.converterSkipFree?.addEventListener('change', async () => {
     const isCurrent = workspaceTaskIsCurrent();

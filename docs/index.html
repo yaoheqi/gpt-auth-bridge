@@ -273,6 +273,9 @@
           </div>
           <div id="login-push-slot">
             <div class="push-controls" id="push-controls" aria-label="远程推送" aria-describedby="push-hint">
+              <label class="button button-secondary converter-free-filter" id="login-non-personal-filter" title="仅选择非个人工作区；未获取到时重新登录，最多尝试三次">
+                <input id="login-require-non-personal" type="checkbox" />必须获取非个人工作区
+              </label>
               <div class="monitor-controls">
                 <span class="push-label" aria-hidden="true">测活</span>
                 <fieldset id="session-monitor-choice" class="push-target">
@@ -309,7 +312,7 @@
               <li class="login-step" data-login-stage="1"><span class="login-step-marker">2</span><span class="login-step-label">输入账号</span></li>
               <li class="login-step" data-login-stage="2"><span class="login-step-marker">3</span><span class="login-step-label">验证密码</span></li>
               <li class="login-step" data-login-stage="3"><span class="login-step-marker">4</span><span class="login-step-label">验证 2FA</span></li>
-              <li class="login-step" data-login-stage="4"><span class="login-step-marker">5</span><span class="login-step-label">获取个人 RT</span></li>
+              <li class="login-step" data-login-stage="4"><span class="login-step-marker">5</span><span class="login-step-label">获取首个 RT</span></li>
               <li class="login-step" data-login-stage="5"><span class="login-step-marker">6</span><span class="login-step-label">授权工作区</span></li>
               <li class="login-step" data-login-stage="6"><span class="login-step-marker">7</span><span class="login-step-label">完成</span></li>
             </ol>
