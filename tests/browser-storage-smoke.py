@@ -280,9 +280,16 @@ def main():
                     expect(screen.locator('#push-feedback')).to_be_hidden()
                     if width >= 1024:
                         title = screen.locator('.login-title-row').bounding_box()
+                        heading = screen.locator('.login-heading').bounding_box()
                         push = screen.locator('#push-controls').bounding_box()
-                        assert push['x'] >= title['x'] + title['width']
-                        assert abs(push['y'] - title['y']) < 30
+                        # Additional workspace controls may wrap at tablet widths.
+                        beside = push['x'] >= heading['x'] + heading['width'] and abs(push['y'] - title['y']) < 30
+                        below = push['y'] >= heading['y'] + heading['height']
+                        assert beside or below, (width, heading, push)
+                        header = screen.locator('.login-header').bounding_box()
+                        assert push['x'] >= header['x']
+                        assert push['x'] + push['width'] <= header['x'] + header['width']
+                        assert push['y'] + push['height'] <= header['y'] + header['height']
                     if os.environ.get('PUSH_UI_SCREENSHOTS'):
                         destination = Path(os.environ['PUSH_UI_SCREENSHOTS'])
                         destination.mkdir(parents=True, exist_ok=True)
