@@ -75,6 +75,8 @@ export class SqliteAccountRepository {
   }
 
   importOne(imported) {
+    const pending = this.findByEmail(String(imported.email || '').trim().toLowerCase());
+    if (pending?.totp_reset_pending) return pending;
     const id = withTransaction(this.db, () => {
       const email = String(imported.email || '').trim();
       const emailKey = email.toLowerCase();
@@ -338,6 +340,7 @@ export class SqliteAccountRepository {
       openai_name: profile.openai_name || '',
       openai_birthdate: profile.openai_birthdate || '',
       two_factor_secret: dec(profile.two_factor_secret_enc),
+      totp_reset_pending: profile.totp_reset_pending_enc ? JSON.parse(dec(profile.totp_reset_pending_enc)) : null,
       session_access_token: dec(session.access_token_enc),
       session_json: dec(session.session_json_enc),
       storage_state_path: session.storage_state_path || '',
@@ -433,9 +436,9 @@ export class SqliteAccountRepository {
       VALUES (?, ?, ?)
     `).run(id, enc(account.password), enc(account.raw));
     this.db.prepare(`
-      INSERT OR REPLACE INTO openai_profiles(account_id, openai_password_enc, openai_name, openai_birthdate, two_factor_secret_enc)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, enc(account.openai_password), account.openai_name || '', account.openai_birthdate || '', enc(account.two_factor_secret));
+      INSERT OR REPLACE INTO openai_profiles(account_id, openai_password_enc, openai_name, openai_birthdate, two_factor_secret_enc, totp_reset_pending_enc)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, enc(account.openai_password), account.openai_name || '', account.openai_birthdate || '', enc(account.two_factor_secret), enc(account.totp_reset_pending ? JSON.stringify(account.totp_reset_pending) : ''));
     this.db.prepare(`
       INSERT OR REPLACE INTO sessions(account_id, access_token_enc, session_json_enc, storage_state_path, storage_state_json_enc, health, health_checked_at, health_detail, plus_trial_eligible, plus_trial_campaign, plus_trial_country, plus_trial_checked_at, plus_trial_detail)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

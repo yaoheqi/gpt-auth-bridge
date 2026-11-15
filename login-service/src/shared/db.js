@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const MIGRATIONS = [
   {
@@ -222,6 +222,10 @@ CREATE TABLE IF NOT EXISTS account_fingerprints (
     sql: `
 ALTER TABLE business_credentials ADD COLUMN workspace_credentials_json TEXT;
 `,
+  },
+  {
+    version: 8,
+    sql: `ALTER TABLE openai_profiles ADD COLUMN totp_reset_pending_enc TEXT;`,
   },
 ];
 

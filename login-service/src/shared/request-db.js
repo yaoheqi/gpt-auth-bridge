@@ -13,7 +13,7 @@ CREATE TABLE accounts (
   business_sub2api_push_source TEXT, business_sub2api_account_id TEXT
 );
 CREATE TABLE mail_credentials (account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, password_enc TEXT, raw_enc TEXT);
-CREATE TABLE openai_profiles (account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, openai_password_enc TEXT, openai_name TEXT, openai_birthdate TEXT, two_factor_secret_enc TEXT);
+CREATE TABLE openai_profiles (account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, openai_password_enc TEXT, openai_name TEXT, openai_birthdate TEXT, two_factor_secret_enc TEXT, totp_reset_pending_enc TEXT);
 CREATE TABLE sessions (
   account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, access_token_enc TEXT, session_json_enc TEXT,
   storage_state_path TEXT, storage_state_json_enc TEXT, health TEXT NOT NULL DEFAULT '', health_checked_at TEXT, health_detail TEXT,

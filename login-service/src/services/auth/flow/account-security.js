@@ -155,6 +155,7 @@ export function createAccountSecurityMethods({
     },
 
     async enrollAndActivateTotpForSession(accessToken, { skipIfEnabled = true } = {}) {
+      if (this.account?.totp_reset_pending) throw new Error('2FA 换绑尚未确认，请先保留新密钥并核对状态');
       const token = String(accessToken || '').trim();
       if (!token) throw new Error('设置 2FA 缺少 accessToken');
       await this.ensureChatGptDeviceCookie();
@@ -203,7 +204,8 @@ export function createAccountSecurityMethods({
       };
     },
 
-    async resetTotpForSession(accessToken) {
+    // This request must finish and be saved by the browser before activation.
+    async prepareTotpResetForSession(accessToken) {
       let authMutationStarted = false;
       try {
         const token = String(accessToken || '').trim();
@@ -214,8 +216,9 @@ export function createAccountSecurityMethods({
         const factorId = String(factors[0]?.id || before?.native_default_factor_id || '').trim();
         if (factorId) {
           this.log(`禁用旧 TOTP 因子 (factor=${factorId.slice(0, 8)}…)`);
-          await this.disableTotpMfa(token, factorId);
+          // A lost response may still have disabled the old factor.
           authMutationStarted = true;
+          await this.disableTotpMfa(token, factorId);
         }
 
         this.log('生成新的 TOTP 密钥');
@@ -225,18 +228,30 @@ export function createAccountSecurityMethods({
         const sessionId = String(enrolled?.session_id || '').trim();
         const newFactorId = String(enrolled?.factor?.id || '').trim();
         if (!sessionId) throw new Error('mfa/enroll 未返回 session_id');
-        const code = generateTotpCode(secret);
-        await this.activateTotpEnrollment(token, { code, sessionId });
-        const after = await this.getMfaInfo(token);
-        if (!(after?.mfa_enabled || after?.mfa_enabled_v2)) {
-          throw new Error('新 2FA 激活后 mfa_info 仍显示未启用');
-        }
-        this.log('TOTP 2FA 换绑成功');
-        return { secret, factorId: newFactorId || String(after?.native_default_factor_id || ''), mfaInfo: after, enroll: enrolled };
+        this.log('新 TOTP 已生成，等待浏览器保存后激活');
+        return { secret, sessionId, factorId: newFactorId, phase: 'prepared' };
       } catch (error) {
         error.authMutationStarted = authMutationStarted;
         throw error;
       }
+    },
+
+    async activatePreparedTotpForSession(accessToken, pending) {
+      const secret = validateTotpSecret(pending?.secret);
+      if (!pending?.sessionId) throw new Error('缺少已保存的 2FA 激活信息，已停止操作');
+      await this.activateTotpEnrollment(accessToken, { code: generateTotpCode(secret), sessionId: pending.sessionId });
+      // Return the acknowledgment before any fallible status query.
+    },
+
+    async confirmTotpResetForSession(accessToken, pending) {
+      const info = await this.getMfaInfo(accessToken);
+      const enabled = Boolean(info?.mfa_enabled || info?.mfa_enabled_v2);
+      const factors = Array.isArray(info?.factors?.totp) ? info.factors.totp : [];
+      const matches = pending?.factorId
+        ? factors.some(factor => String(factor?.id) === pending.factorId)
+        : pending?.phase === 'activated';
+      if (!enabled || !matches) throw new Error('尚不能确认已保存的新密钥生效，请保留密钥并稍后核对；不会自动重新换绑');
+      return info;
     },
 
     async ensureTotpEnrolledIfNeeded(accessToken, { throwOnError = false } = {}) {

@@ -17,29 +17,43 @@ def check_cached_actions(browser, url):
     def operation(route):
         body = route.request.post_data_json
         action = route.request.url.rsplit('/', 1)[1]
-        calls.append(action)
+        phase = body.get('action', '')
+        calls.append(action + (':' + phase if phase else ''))
         assert body['proxyMode'] == 'local' and body['localProxyPort'] == 17890
         snapshot = body['browserState']
         rows = snapshot['accounts']
-        first = next(row for row in rows if row['id'] == 'reset-ok')
-        second = next(row for row in rows if row['id'] == 'reset-failed')
-        assert second['two_factor_secret'] == old_secret
-        assert first['session_access_token'] == ('cached-session-reset-ok' if action == 'reset-totp' else 'post-reset-session')
-        if action == 'reset-totp':
-            first.update(two_factor_secret=new_secret, session_access_token='post-reset-session',
-                         storage_state_json='{"cookies":[{"name":"fixture","value":"post-reset"}]}')
-        else:
-            assert body['confirmed'] is True
-            assert first['two_factor_secret'] == new_secret
-            assert 'post-reset' in first['storage_state_json']
-            first.update(session_access_token='', session_json='', storage_state_json='', openai_rt='',
-                         openai_access_token='', business_openai_rt='', business_workspace_credentials=[])
-        results = [{'id': first['id'], 'email': first['email'], 'ok': True, 'credentials': {'line': '[REDACTED]'}},
-                   {'id': second['id'], 'email': second['email'], 'ok': False, 'error': 'fixture HTTP 429'}]
+        results = []
+        for row in rows:
+            if row['id'] == 'reset-failed':
+                assert row['two_factor_secret'] == old_secret
+                row['totp_reset_pending'] = None
+                results.append({'id': row['id'], 'email': row['email'], 'ok': False, 'phase': 'failed', 'error': 'fixture HTTP 429'})
+                continue
+            if action == 'reset-totp' and phase == 'prepare':
+                assert row['session_access_token'] == 'cached-session-reset-ok'
+                row.update(totp_reset_pending={'phase': 'prepared', 'secret': new_secret, 'sessionId': 'fixture-enroll', 'factorId': 'fixture-factor'},
+                           session_access_token='post-reset-session', storage_state_json='{"cookies":[{"name":"fixture","value":"post-reset"}]}')
+                result_phase = 'prepared'
+            elif action == 'reset-totp':
+                assert phase == 'activate'
+                persisted = page.evaluate('() => browserWorkspace.read()')['state']['browserAccounts']
+                saved = next(a for a in persisted if a['id'] == row['id'])
+                assert saved['totp_reset_pending']['secret'] == new_secret
+                assert saved['totp_reset_pending']['phase'] == 'activating'
+                row.update(two_factor_secret=new_secret, totp_reset_pending=None, status='已换绑2FA')
+                result_phase = 'confirmed'
+            else:
+                assert body['confirmed'] is True
+                assert row['two_factor_secret'] == new_secret and row['session_access_token'] == 'post-reset-session'
+                assert 'post-reset' in row['storage_state_json']
+                row.update(session_access_token='', session_json='', storage_state_json='', openai_rt='',
+                           openai_access_token='', business_openai_rt='', business_workspace_credentials=[])
+                result_phase = ''
+            results.append({'id': row['id'], 'email': row['email'], 'ok': True, 'phase': result_phase})
         events = [('account_start', {'id': row['id'], 'email': row['email']}) for row in rows]
         events += [('browser_state', snapshot)]
         events += [('account_done', result) for result in results]
-        events += [('summary', {'ok': False, 'results': results, 'success': 1, 'failed': 1, 'concurrency': 10})]
+        events += [('summary', {'ok': True, 'results': results, 'success': sum(r['ok'] for r in results), 'failed': sum(not r['ok'] for r in results), 'concurrency': 10})]
         route.fulfill(content_type='text/event-stream', body=''.join(f'event: {name}\ndata: {json.dumps(data)}\n\n' for name, data in events))
 
     context.route('**/api/v2/accounts/reset-totp', operation)
@@ -69,7 +83,7 @@ def check_cached_actions(browser, url):
         assert first['two_factor_secret'] == new_secret
         page.once('dialog', lambda dialog: dialog.dismiss())
         page.locator('#protocol-logout-all').click()
-        assert calls == ['reset-totp']
+        assert calls == ['reset-totp:prepare', 'reset-totp:activate']
         page.once('dialog', lambda dialog: dialog.accept())
         page.locator('#protocol-logout-all').click()
         expect(page.locator('#login-status')).to_contain_text('退出全部会话完成：成功 1，失败 1')
@@ -84,7 +98,7 @@ def check_cached_actions(browser, url):
         assert saved['cpaSettings']['managementKey'] == 'fixture-key'
         expect(page.locator('#reset-login-totp')).to_be_enabled()
         expect(page.locator('#self-leave-workspaces')).to_be_enabled()
-        assert calls == ['reset-totp', 'protocol-logout-all']
+        assert calls == ['reset-totp:prepare', 'reset-totp:activate', 'protocol-logout-all']
         assert not errors, errors
     finally:
         context.close()

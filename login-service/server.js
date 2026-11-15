@@ -1026,12 +1026,15 @@ app.post('/api/v2/accounts/import', requireAdmin, async (req, res) => {
 
 app.post('/api/v2/accounts/reset-totp', requireAdmin, async (req, res) => {
   try {
+    const action = req.body?.action;
+    if (!['prepare', 'activate', 'confirm'].includes(action)) throw new Error('请刷新页面，使用分步保存的新 2FA 换绑流程');
     await ensureDatabase();
     const ids = normalizeAccountIds(req.body?.ids);
     if (!ids.length) throw new Error('请先完成协议登录，再选择需要换绑 2FA 的账号');
     const accounts = selectAccountCollection({ allAccounts: getAllAccounts(), findById: findAccountById, ids });
     if (!accounts.length) throw new Error('未找到可换绑 2FA 的账号');
     const run = hooks => runResetTotpForAccounts(accounts, {
+      action,
       concurrency: req.body?.concurrency,
       ...protocolRequestNetwork(req.body || {}),
       ...hooks,

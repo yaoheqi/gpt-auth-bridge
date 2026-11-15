@@ -82,6 +82,7 @@ test('one entrypoint serves the UI, canonical/legacy APIs, SSE and browser-owned
     assert.equal(config.ok, true);
     assert.equal(config.taskConcurrency, 3);
     assert.equal(config.browserConcurrency, 3);
+    assert.equal(config.totpResetProtocolVersion, 2);
     const alias = await fetch(`${app.url}/yy4399`, { redirect: 'manual' });
     assert.equal(alias.headers.get('location'), '/');
     for (const prefix of ['', '/api/login-icloud']) {

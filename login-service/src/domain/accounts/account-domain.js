@@ -23,6 +23,7 @@ export function resolveAccountLoginMethod(account, { preferStoredSession = false
   return ACCOUNT_LOGIN_METHODS.UNSUPPORTED;
 }
 export function protocolLoginCredentialIssue(account) {
+  if (account?.totp_reset_pending) return '2FA 换绑尚未确认，请先继续换绑或核对状态；已禁止使用旧密钥登录';
   const hasPassword = Boolean(String(account?.openai_password || account?.password || '').trim());
   const missing = [];
   if (!String(account?.email || '').trim().includes('@')) missing.push('有效邮箱');
@@ -108,6 +109,16 @@ export function planTypeLabel(planType) {
   return plan;
 }
 const BUSINESS_JOIN_STATUSES = new Set(['none', 'requested', 'joined', 'rt_ready', 'failed']);
+export function normalizeTotpResetPending(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return {
+    phase: ['preparing', 'prepared', 'activating', 'activated'].includes(value.phase) ? value.phase : 'activating',
+    secret: normalizeTotpSecret(value.secret || ''),
+    sessionId: String(value.sessionId || '').trim(),
+    factorId: String(value.factorId || '').trim(),
+    createdAt: String(value.createdAt || '').trim(),
+  };
+}
 export function normalizeBusinessJoinStatus(value) { const status = String(value || '').trim().toLowerCase(); return BUSINESS_JOIN_STATUSES.has(status) ? status : 'none'; }
 export function normalizeDbAccount(value = {}, { now = () => new Date().toISOString(), createId = randomUUID } = {}) {
   const email = stripExportNamePrefix(value.email);
@@ -117,6 +128,7 @@ export function normalizeDbAccount(value = {}, { now = () => new Date().toISOStr
     openai_password: String(value.openai_password || value.openaiPassword || '').trim(), openai_name: String(value.openai_name || value.openaiName || '').trim(),
     openai_birthdate: String(value.openai_birthdate || value.openaiBirthdate || '').trim(), two_factor_secret: normalizeTotpSecret(value.two_factor_secret || value.twoFactorSecret || ''),
     raw: String(value.raw || '').trim(),
+    totp_reset_pending: normalizeTotpResetPending(value.totp_reset_pending),
     openai_rt: String(value.openai_rt || value.openaiRt || value.rt_token || '').trim(), openai_access_token: String(value.openai_access_token || value.openaiAccessToken || '').trim(),
     openai_id_token: String(value.openai_id_token || value.openaiIdToken || '').trim(), openai_account_id: String(value.openai_account_id || value.openaiAccountId || '').trim(),
     openai_token_expires_at: Number(value.openai_token_expires_at || value.openaiTokenExpiresAt || 0) || 0,
@@ -297,6 +309,7 @@ export function parseUserImportLine(line) {
 export function mergeImportedAccount(existing, imported, { now = () => new Date().toISOString(), normalize = normalizeDbAccount } = {}) {
   const timestamp = now();
   if (existing) {
+    if (existing.totp_reset_pending) return existing;
     existing.email = imported.email || existing.email;
     existing.emailKey = normalizeEmail(existing.email);
     if ('password' in imported) existing.password = imported.password || '';

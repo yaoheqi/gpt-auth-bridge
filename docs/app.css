@@ -828,6 +828,7 @@ body.is-team-checkout { background: #fff; }
 
 .login-reset-output-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -850,6 +851,12 @@ body.is-team-checkout { background: #fff; }
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+#login-reset-pending-status {
+  padding-left: 20px;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
 }
 
 .login-account-label small {

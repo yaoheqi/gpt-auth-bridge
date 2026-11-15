@@ -12,7 +12,6 @@ import { inferOpenAiStage as defaultInferOpenAiStage } from '../../../lib/accoun
 import { mapWithConcurrency as defaultMapWithConcurrency } from '../../../lib/sse.js';
 import { monitorCoordinator as defaultMonitorCoordinator } from '../monitor-coordinator.js';
 import { nowIso as defaultNowIso } from './auth-records.js';
-import { publicResetTotpCredential as defaultPublicResetTotpCredential } from './auth-result-views.js';
 import { withCachedWebSession as defaultWithCachedWebSession } from '../cached-web-session.js';
 
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
@@ -32,7 +31,6 @@ export function createTotpService({
   normalizeTotpSecret = defaultNormalizeTotpSecret,
   nowIso = defaultNowIso,
   persistChatGptWebSession,
-  publicResetTotpCredential = defaultPublicResetTotpCredential,
   resolveAccountLoginMethod = defaultResolveAccountLoginMethod,
   structuredLog = defaultStructuredLog,
   validateTotpSecret = defaultValidateTotpSecret,
@@ -258,82 +256,99 @@ export function createTotpService({
   }
 
   async function runResetTotpForAccount(account, {
-    onAccountStart,
-    onAccountLog,
-    onAccountDone,
-    ...network
+    action, onAccountStart, onAccountLog, onAccountDone, ...network
   } = {}) {
     const startedAt = Date.now();
-    const emit = (msg, level = 'info') => {
-      const entry = { time: nowIso(), level, msg: String(msg || '') };
-      onAccountLog?.({ id: account?.id, email: account?.email, ...entry });
+    let preparingNew = false;
+    const emit = (msg, level = 'info') => onAccountLog?.({
+      id: account?.id, email: account?.email, time: nowIso(), level, msg: String(msg || ''),
+    });
+    const outcome = (ok, phase, error = '') => {
+      const output = { ok, id: account?.id, email: account?.email, phase, error, durationMs: durationMs(startedAt) };
+      onAccountDone?.(output);
+      return output;
     };
     try {
+      if (!['prepare', 'activate', 'confirm'].includes(action)) throw new Error('请刷新页面，使用分步保存的新 2FA 换绑流程');
       return await monitorCoordinator.runExclusive(account.email, async () => {
-        let latest = account.id ? (findAccountById(account.id) || account) : account;
+        const latest = account.id ? (findAccountById(account.id) || account) : account;
         onAccountStart?.({ id: latest.id, email: latest.email, stage: 0 });
-        // Reuse the browser's session and recent-auth cookies. Only an explicit
-        // authentication rejection before any mutation permits a fresh login.
-        const loginMethod = resolveAccountLoginMethod(latest);
-        if (loginMethod !== 'password_totp') {
-          throw new Error('2FA 换绑要求账号具备邮箱、密码和旧 TOTP；请使用三段账号格式重新导入');
+        let pending = latest.totp_reset_pending;
+        if (action === 'prepare' && pending && pending.phase !== 'preparing') {
+          return outcome(true, pending.phase);
         }
-        emit('创建账号独立隔离环境，优先复用浏览器 Session 和 Cookie');
+        preparingNew = action === 'prepare';
+        if (preparingNew && resolveAccountLoginMethod(latest) !== 'password_totp') {
+          throw new Error('2FA 换绑要求邮箱、密码和当前 TOTP；请先补全账号凭据');
+        }
+        if (!preparingNew && !pending?.secret) throw new Error('未收到新密钥，不能继续激活；请在账号安全设置中核对状态');
+        if (action === 'activate' && pending.phase !== 'activating') throw new Error('请先在浏览器保存新密钥及激活状态');
         const flowAccount = {
           ...latest,
-          session_access_token: String(latest.session_access_token || '').trim(),
-          session_json: String(latest.session_json || '').trim(),
-          storage_state_json: String(latest.storage_state_json || '').trim(),
+          // The initial prepare may authenticate before changing anything. All
+          // later requests must use Session/cookies without an old-key login.
+          totp_reset_pending: preparingNew ? null : pending,
           two_factor_secret: normalizeTotpSecret(latest.two_factor_secret),
           openai_password: String(latest.openai_password || latest.password || '').trim(),
         };
         const flow = new OpenAIJsonAuthFlow(flowAccount, {
-          send(event, data) {
-            if (event !== 'log') return;
-            emit(data?.msg || data?.error || '', data?.level || 'info');
-          },
+          send(event, data) { if (event === 'log') emit(data?.msg || data?.error || '', data?.level || 'info'); },
         }, { phoneMode: 'sms', forbidPhoneChallenge: true, humanPacingEnabled: false, ...accountRequestNetwork(latest, network) });
-        try {
-          const { result, session } = await withCachedWebSession(flowAccount, {
-            flow,
-            persistSession: login => persistChatGptWebSession(latest.id, { ...login, status: '2FA 换绑认证成功' }),
-          }, accessToken => flow.resetTotpForSession(accessToken));
-          const secret = validateTotpSecret(result.secret);
-          await accountRepository.updateById(latest.id, current => ({
+        const savePrimarySecret = async phase => {
+          const secret = validateTotpSecret(pending.secret);
+          await accountRepository.updateById(latest.id, {
             two_factor_secret: secret,
             raw: [latest.email, flowAccount.openai_password, secret].join('----'),
-            fingerprint_json: flowAccount.fingerprint_json || latest.fingerprint_json || '',
-            status: '已换绑2FA',
+            totp_reset_pending: phase === 'confirmed' ? null : { ...pending, phase },
+            status: phase === 'confirmed' ? '已换绑2FA' : '新 2FA 已激活，状态待确认',
             last_error: '',
-            ...(!String(current.openai_password || '').trim() && flowAccount.openai_password
-              ? { openai_password: flowAccount.openai_password } : {}),
-          }));
-          await persistChatGptWebSession(latest.id, {
-            ...session, storageState: await flow.exportCookieStorageState(), status: '已换绑2FA',
           });
-          const refreshed = findAccountById(latest.id) || { ...latest, two_factor_secret: secret };
-          const output = {
-            ok: true,
-            id: refreshed.id,
-            email: refreshed.email,
-            factorId: result.factorId || '',
-            mfaEnabled: Boolean(result.mfaInfo?.mfa_enabled || result.mfaInfo?.mfa_enabled_v2),
-            credentials: publicResetTotpCredential(refreshed, secret),
-            durationMs: durationMs(startedAt),
-          };
-          onAccountDone?.(output);
-          return output;
+        };
+        try {
+          const { session } = await withCachedWebSession(flowAccount, {
+            flow, allowLogin: preparingNew,
+            persistSession: login => persistChatGptWebSession(latest.id, { ...login, status: '2FA 换绑认证成功' }),
+          }, async accessToken => {
+            if (preparingNew) {
+              const prepared = await flow.prepareTotpResetForSession(accessToken);
+              pending = { ...prepared, secret: validateTotpSecret(prepared.secret), createdAt: nowIso() };
+              await accountRepository.updateById(latest.id, {
+                totp_reset_pending: pending, status: '新 2FA 已生成，待保存并激活', last_error: '',
+                fingerprint_json: flowAccount.fingerprint_json || latest.fingerprint_json || '',
+              });
+            } else {
+              if (action === 'activate') {
+                await flow.activatePreparedTotpForSession(accessToken, pending);
+                pending = { ...pending, phase: 'activated' };
+                // Commit the acknowledged key before the optional status query.
+                await savePrimarySecret('activated');
+              }
+              await flow.confirmTotpResetForSession(accessToken, pending);
+              await savePrimarySecret('confirmed');
+            }
+          });
+          await persistChatGptWebSession(latest.id, {
+            ...session, storageState: await flow.exportCookieStorageState(),
+            status: preparingNew ? '新 2FA 已生成，待保存并激活' : '已换绑2FA',
+          });
+          return outcome(true, preparingNew ? 'prepared' : 'confirmed');
         } finally {
           await flow.dispose().catch(() => {});
         }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (account?.id) await accountRepository.updateById(account.id, { status: '换绑2FA失败', last_error: message }).catch(() => {});
-      const output = { ok: false, id: account?.id, email: account?.email, error: message, durationMs: durationMs(startedAt) };
-      onAccountLog?.({ id: account?.id, email: account?.email, time: nowIso(), level: 'error', msg: message });
-      onAccountDone?.(output);
-      return output;
+      const latest = findAccountById(account?.id) || account;
+      let pending = latest?.totp_reset_pending;
+      if (preparingNew && !pending?.secret) pending = error.authMutationStarted
+        ? { phase: 'preparing', secret: '', sessionId: '', factorId: '', createdAt: nowIso() } : null;
+      const status = pending?.phase === 'activated' ? '新 2FA 已激活，状态待确认'
+        : pending ? '2FA 换绑待确认，请保留新密钥' : '换绑2FA失败';
+      if (account?.id) await accountRepository.updateById(account.id, {
+        totp_reset_pending: pending || null, status, last_error: message,
+      }).catch(() => {});
+      emit(message, 'error');
+      return outcome(false, pending?.phase || 'failed', message);
     }
   }
 

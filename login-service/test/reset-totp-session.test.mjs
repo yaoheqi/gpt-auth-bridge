@@ -32,25 +32,30 @@ test('reset persists the new secret, same Session and updated cookies for a subs
         log() {}
         async importStoredCookieStorageState() { calls.push('cookies'); }
         async loginChatGptWebWithPasswordTotp() { calls.push('login'); return { accessToken: 'fresh-session', session: { user: { email: account.email } }, storageState: '{"cookies":[]}' }; }
-        async resetTotpForSession(token) {
+        async prepareTotpResetForSession(token) {
           assert.equal(token, cached ? 'cached-session' : 'fresh-session');
-          calls.push('reset');
-          return { secret: newSecret, factorId: 'fixture-factor', mfaInfo: { mfa_enabled: true } };
+          calls.push('prepare');
+          return { secret: newSecret, sessionId: 'fixture-enrollment', factorId: 'fixture-factor', phase: 'prepared' };
         }
+        async activatePreparedTotpForSession() { calls.push('activate'); }
+        async confirmTotpResetForSession() { calls.push('confirm'); }
         async exportCookieStorageState() { return '{"cookies":[{"name":"updated-cookie"}]}'; }
         async dispose() { disposed++; }
       },
     };
     const run = createTotpService(bindings).runResetTotpForAccount;
-    const result = await run(account, { proxyPool: 'http://127.0.0.1:17890', directWhenProxyPoolEmpty: true, onAccountDone: item => done.push(item) });
+    const options = { proxyPool: 'http://127.0.0.1:17890', directWhenProxyPoolEmpty: true, onAccountDone: item => done.push(item) };
+    await run(account, { ...options, action: 'prepare' });
+    account.totp_reset_pending.phase = 'activating';
+    const result = await run(account, { ...options, action: 'activate' });
     assert.equal(result.ok, true, result.error);
     assert.equal(account.two_factor_secret, newSecret);
     assert.equal(account.raw, [account.email, account.password, newSecret].join('----'));
     assert.equal(account.fingerprint_json, 'fixture-fingerprint');
     assert.match(account.storage_state_json, /updated-cookie/);
-    assert.deepEqual(calls, cached ? ['cookies', 'reset'] : ['cookies', 'login', 'reset']);
-    assert.equal(done.length, 1);
-    assert.equal(disposed, 1);
+    assert.deepEqual(calls, cached ? ['cookies', 'prepare', 'cookies', 'activate', 'confirm'] : ['cookies', 'login', 'prepare', 'cookies', 'activate', 'confirm']);
+    assert.equal(done.length, 2);
+    assert.equal(disposed, 2);
     // A new request gets the browser snapshot, not the previous flow instance.
     await withCachedWebSession(structuredClone(account), { flow: {
       log() {}, importStoredCookieStorageState: async () => {},

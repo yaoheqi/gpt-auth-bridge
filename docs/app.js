@@ -140,6 +140,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
     if (snapshot.settings?.sub2apiSettings) restoreSub2apiAccountConfig();
     rememberLoginAccountKeys();
+    renderTotpResetRecovery();
     // Credentials are a durable boundary even when they arrive as a partial SSE
     // snapshot. The caller waits before displaying completion or sending work.
     await persistBrowserWorkspace(true, true);
@@ -2931,7 +2932,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (!navigator.locks) return { reason: '此浏览器不支持多标签页任务协调，请使用新版浏览器及 HTTPS' };
     const target = selectedPushTarget();
     try { pushSettings(target); } catch { return { reason: '请选择并保存 Sub2API 或 CPA 推送配置' }; }
-    const accounts = state.browserAccounts.filter(account => account.id && !state.monitorStopped[account.id] && account.email?.includes('@')
+    const accounts = state.browserAccounts.filter(account => account.id && !account.totp_reset_pending && !state.monitorStopped[account.id] && account.email?.includes('@')
       && (account.openai_password || account.password) && (account.two_factor_secret || account.twoFactorSecret)
       && (account.session_access_token || account.openai_access_token || state.monitorRetries[account.id]));
     return accounts.length ? { accounts } : { reason: state.browserAccounts.some(account => state.monitorStopped[account.id])
@@ -3418,82 +3419,133 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       line: [account.email, account.openai_password || account.password, account.two_factor_secret].join('----') };
   }
 
-  async function resetLoginTotp() {
+  function renderTotpResetRecovery() {
+    const confirmed = state.browserAccounts.filter(account => !account.totp_reset_pending && account.status === '已换绑2FA');
+    if (confirmed.length) showLoginResetCredentials(confirmed.map(account => syncResetTotpInput(account.id)).filter(Boolean));
+    const pending = state.browserAccounts.filter(account => account.totp_reset_pending);
+    const panel = document.querySelector('#login-reset-pending');
+    if (!panel) return;
+    panel.classList.toggle('hidden', !pending.length);
+    const labels = {
+      preparing: '准备请求结果未收到，请在账号安全设置中核对；不要使用旧密钥重登',
+      prepared: '新密钥已生成，等待激活',
+      activating: '激活已提交，结果待确认',
+      activated: '新密钥已激活，状态待确认',
+    };
+    document.querySelector('#login-reset-pending-status').replaceChildren(...pending.map(account => {
+      const item = document.createElement('li');
+      item.textContent = `${account.email} · ${labels[account.totp_reset_pending.phase] || '状态待确认'}`;
+      return item;
+    }));
+    const credentials = pending.filter(account => account.totp_reset_pending.secret).map(account => {
+      const password = account.openai_password || account.password || '';
+      const secret = account.totp_reset_pending.secret;
+      state.loginSensitiveValues.push(password, secret);
+      if (account.totp_reset_pending.phase === 'activated') syncResetTotpInput(account.id);
+      return [account.email, password, secret].join('----');
+    });
+    document.querySelector('#login-reset-pending-credentials').textContent = credentials.join('\n');
+    document.querySelector('#copy-login-reset-pending').disabled = !credentials.length;
+    document.querySelector('#download-login-reset-pending').disabled = !credentials.length;
+    state.loginSensitiveValues = [...new Set(state.loginSensitiveValues.filter(Boolean))];
+  }
+
+  async function resetLoginTotp({ resume = false } = {}) {
     if (monitorBusy || selfLeaveBusy || protocolLogoutBusy || elements.startProtocolLogin.disabled) return;
     const isCurrent = workspaceTaskIsCurrent();
-    const completedCredentials = new Map();
-    if (typeof window.confirm === "function" && !window.confirm("重设 2FA 会先禁用旧验证器，再生成新的 2FA 密钥。请确认你能立即保存新密钥。")) return;
-    elements.resetLoginTotp.disabled = true;
-    elements.protocolLogoutAll.disabled = true;
-    elements.selfLeaveWorkspaces.disabled = true;
-    elements.importLoginFile.disabled = true;
-    elements.startProtocolLogin.disabled = true;
-    elements.loginAccounts.disabled = true;
+    if (!resume && !window.confirm('重设 2FA 会先禁用旧验证器。新密钥加密保存到浏览器后才会激活；结果不明时保留新密钥并停止重试。请保留当前登录并备份新密钥。')) return;
+    const controls = [elements.resetLoginTotp, elements.protocolLogoutAll, elements.selfLeaveWorkspaces,
+      elements.importLoginFile, elements.startProtocolLogin, elements.loginAccounts, document.querySelector('#resume-login-totp')];
+    controls.forEach(node => { node.disabled = true; });
     stopSessionMonitor(true);
+    const outcomes = new Map();
+    const completedCredentials = new Map();
     try {
-      const lines = parseLoginAccounts(elements.loginAccounts.value);
+      const configResponse = await pageFetch('/api/system/config', { cache: 'no-store' });
+      const config = configResponse.ok ? await configResponse.json() : null;
+      if (config?.totpResetProtocolVersion !== 2) throw new Error('服务端尚未支持安全换绑，请先重启服务并刷新页面');
+      requireCurrentWorkspace(isCurrent);
+      const pendingAccounts = state.browserAccounts.filter(account => account.totp_reset_pending);
+      const lines = resume ? pendingAccounts.map(account => [account.email, account.openai_password || account.password,
+        account.totp_reset_pending.secret || account.two_factor_secret].join('----')) : parseLoginAccounts(elements.loginAccounts.value);
+      if (!lines.length) throw new Error('没有需要恢复的 2FA 换绑');
       initializeLoginProgress(lines, { preserveExports: true });
-      const imported = await loginIcloudRequest("/api/v2/accounts/import", {
-        text: lines.join("\n"),
-        prepareRegistrationAssets: false,
-      });
-      if (!isCurrent()) return;
-      const importedRows = Array.isArray(imported.rows) ? imported.rows : [];
-      const ids = importedRows.map(row => row.id || row.account?.id).filter(Boolean).map(String);
-      importedRows.forEach((row, index) => {
-        const record = loginProgressRecord({ id: row.id || row.account?.id, email: row.email || row.account?.email || loginAccountEmail(lines[index]) });
-        if (!record) return;
-        record.id = String(row.id || row.account?.id || "");
-        appendLoginProgress(record, "账号已导入，等待换绑队列调度", { stage: 0, status: "waiting" });
-      });
-      if (!ids.length) throw new Error("请先完成协议登录，再重设 2FA");
+      // Existing browser records are authoritative: stale input must not replace
+      // a candidate key or overwrite a key already acknowledged by the server.
+      const knownEmails = new Set(state.browserAccounts.map(account => account.email.toLowerCase()));
+      const newLines = lines.filter(line => !knownEmails.has(loginAccountEmail(line).toLowerCase()));
+      if (newLines.length) await loginIcloudRequest('/api/v2/accounts/import', { text: newLines.join('\n'), prepareRegistrationAssets: false });
+      requireCurrentWorkspace(isCurrent);
+      const emails = new Set(lines.map(line => loginAccountEmail(line).toLowerCase()));
+      const accounts = state.browserAccounts.filter(account => emails.has(account.email.toLowerCase()));
       const concurrency = selectedTaskConcurrency();
-      setStatus(elements.loginStatus, `正在并发换绑 ${ids.length} 个账号的 2FA，并发 ${concurrency}...`);
-      const result = await loginIcloudStream("/api/v2/accounts/reset-totp", { ids, concurrency, ...selectedLoginProxyNetwork() }, (name, data) => {
-        const record = loginProgressRecord(data);
-        if (name === "account_start") {
-          appendLoginProgress(record, "开始换绑 2FA", { stage: 0, status: "running", time: data.time });
-        } else if (name === "account_log") {
-          appendLoginProgress(record, data.msg || data.error, {
-            stage: /禁用旧|生成新的|激活|TOTP|2FA/i.test(data.msg || data.error) ? 3 : 2,
-            status: "running", level: data.level, time: data.time,
-          });
-        } else if (name === "account_done") {
-          if (data.ok) {
-            const credential = syncResetTotpInput(data.id);
-            if (credential) completedCredentials.set(String(data.id), credential);
-            showLoginResetCredentials([...completedCredentials.values()]);
-            persistBrowserWorkspace(true);
+      const freshIds = accounts.filter(account => !account.totp_reset_pending).map(account => String(account.id));
+      const confirmIds = accounts.filter(account => account.totp_reset_pending && account.totp_reset_pending.phase !== 'prepared').map(account => String(account.id));
+      const runStep = async (action, ids) => {
+        if (!ids.length) return;
+        requireCurrentWorkspace(isCurrent);
+        const labels = { prepare: '生成并保存新密钥', activate: '激活已保存的新密钥', confirm: '核对新 2FA 状态' };
+        setStatus(elements.loginStatus, `正在${labels[action]}：${ids.length} 个账号…`);
+        const result = await loginIcloudStream("/api/v2/accounts/reset-totp", { ids, action, concurrency, ...selectedLoginProxyNetwork() }, (name, data) => {
+          const record = loginProgressRecord(data);
+          if (name === 'account_start') appendLoginProgress(record, labels[action], { stage: 1, status: 'running' });
+          if (name === 'account_log') appendLoginProgress(record, data.msg || data.error, { stage: 2, status: 'running', level: data.level });
+          if (name === 'account_done') {
+            outcomes.set(String(data.id), data);
+            if (data.phase === 'confirmed' && data.ok) {
+              const credential = syncResetTotpInput(data.id);
+              if (credential) completedCredentials.set(String(data.id), credential);
+              showLoginResetCredentials([...completedCredentials.values()]);
+            }
+            renderTotpResetRecovery();
+            appendLoginProgress(record, data.ok ? (data.phase === 'confirmed' ? '2FA 换绑成功' : '新密钥已保存，等待激活') : data.error || '2FA 状态待确认', {
+              stage: data.phase === 'confirmed' ? 4 : 3, status: data.ok ? (data.phase === 'confirmed' ? 'success' : 'running') : 'error',
+            });
           }
-          appendLoginProgress(record, data.ok ? "2FA 换绑成功" : (data.error || "2FA 换绑失败"), {
-            stage: data.ok ? 4 : 3, status: data.ok ? "success" : "error", level: data.ok ? "info" : "error",
-          });
+        });
+        for (const item of result.results || []) outcomes.set(String(item.id), item);
+        requireCurrentWorkspace(isCurrent);
+      };
+      if (freshIds.length) {
+        for (const account of accounts.filter(account => freshIds.includes(String(account.id)))) {
+          account.totp_reset_pending = { phase: 'preparing', createdAt: new Date().toISOString() };
         }
-      });
-      if (!isCurrent()) return;
-      const credentials = (result.results || []).filter(item => item.ok).flatMap(item => {
-        const credential = syncResetTotpInput(item.id);
-        return credential ? [credential] : [];
-      });
-      showLoginResetCredentials(credentials);
+        try { await persistBrowserWorkspace(true, true); }
+        catch (error) {
+          for (const account of accounts.filter(account => freshIds.includes(String(account.id)))) account.totp_reset_pending = null;
+          throw error;
+        }
+        await runStep('prepare', freshIds);
+      }
+      await runStep('confirm', confirmIds);
+      const selectedIds = new Set(accounts.map(account => String(account.id)));
+      const prepared = state.browserAccounts.filter(account => selectedIds.has(String(account.id)) && account.totp_reset_pending?.phase === 'prepared');
+      if (prepared.length) {
+        // The candidate and the uncertain activation marker must both survive a
+        // reload even when the next HTTP request loses its entire response.
+        for (const account of prepared) account.totp_reset_pending.phase = 'activating';
+        try { await persistBrowserWorkspace(true, true); }
+        catch (error) {
+          for (const account of prepared) account.totp_reset_pending.phase = 'prepared';
+          throw error;
+        }
+        await runStep('activate', prepared.map(account => String(account.id)));
+      }
+      renderTotpResetRecovery();
       await persistBrowserWorkspace(true, true);
-      const failed = Number(result.failed || 0);
-      const firstError = (result.results || []).find(item => !item.ok)?.error || "";
-      setStatus(elements.loginStatus, failed
-        ? `2FA 换绑完成：成功 ${result.success || 0}，失败 ${failed}。${firstError ? `原因：${firstError}` : ""}`
-        : `2FA 换绑成功：已更新 ${credentials.length} 个账号，并发 ${result.concurrency || concurrency}，请保存最新凭据。`, failed ? "error" : "ok");
+      const results = [...outcomes.values()];
+      const success = results.filter(item => item.ok && item.phase === 'confirmed').length;
+      const pending = state.browserAccounts.filter(account => selectedIds.has(String(account.id)) && account.totp_reset_pending).length;
+      const failed = results.filter(item => !item.ok && !state.browserAccounts.find(account => String(account.id) === String(item.id))?.totp_reset_pending).length;
+      setStatus(elements.loginStatus, `2FA 换绑完成：成功 ${success}，失败 ${failed}，待处理 ${pending}。${pending ? '请保留新密钥，使用“继续 / 核对换绑”处理。' : '请保存最新凭据。'}`, failed || pending ? 'error' : 'ok');
     } catch (error) {
       if (!isCurrent()) return;
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(elements.loginStatus, message, "error");
+      renderTotpResetRecovery();
+      setStatus(elements.loginStatus, `${error.message || error}。已停止后续激活；如有新密钥，请立即复制或下载备份。`, 'error');
     } finally {
       if (isCurrent()) {
-        elements.resetLoginTotp.disabled = false;
-        elements.protocolLogoutAll.disabled = false;
-        elements.selfLeaveWorkspaces.disabled = false;
-        elements.importLoginFile.disabled = false;
-        elements.startProtocolLogin.disabled = false;
-        elements.loginAccounts.disabled = false;
+        controls.forEach(node => { node.disabled = false; });
+        renderTotpResetRecovery();
         scheduleSessionMonitor();
       }
     }
@@ -4257,6 +4309,19 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   elements.downloadUnmatched?.addEventListener("click", () => downloadSplitGroup("unmatched"));
   elements.startProtocolLogin?.addEventListener("click", () => startProtocolLogin());
   elements.resetLoginTotp?.addEventListener("click", () => resetLoginTotp());
+  document.querySelector('#resume-login-totp').addEventListener('click', () => resetLoginTotp({ resume: true }));
+  document.querySelector('#copy-login-reset-pending').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(document.querySelector('#login-reset-pending-credentials').textContent);
+      setStatus(elements.loginStatus, '待确认的新密钥凭据已复制，请保留并核对状态。', 'ok');
+    } catch { setStatus(elements.loginStatus, '复制失败，请下载备份或手动复制。', 'error'); }
+  });
+  document.querySelector('#download-login-reset-pending').addEventListener('click', () => {
+    const accounts = state.browserAccounts.filter(account => account.totp_reset_pending?.secret).map(account => ({
+      email: account.email, password: account.openai_password || account.password, ...account.totp_reset_pending,
+    }));
+    downloadLoginFile(JSON.stringify({ warning: '新密钥尚未全部确认生效，请保留当前登录并核对状态', accounts }, null, 2), '2fa-reset-backup.json');
+  });
   elements.protocolLogoutAll?.addEventListener('click', () => protocolLogoutAllSessions());
   elements.selfLeaveWorkspaces?.addEventListener('click', () => selfLeaveAccountWorkspaces());
   elements.copyLoginResetOutput?.addEventListener("click", async () => {
@@ -4568,6 +4633,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       elements.loginModalMessage.textContent = '';
       elements.loginResetCredentials.textContent = '';
       elements.loginResetOutput.classList.add('hidden');
+      renderTotpResetRecovery();
       elements.toggleLoginSub2Key.textContent = '显示';
       document.querySelector('#toggle-cpa-key').textContent = '显示';
       renderLogoutProgress();
@@ -4607,6 +4673,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         syncMonitorChoice();
         elements.loginResetCredentials.textContent = saved.resetCredentials || '';
         elements.loginResetOutput.classList.toggle('hidden', !saved.resetCredentials);
+        renderTotpResetRecovery();
         renderLoginSub2Groups();
         renderLoginProgress();
         restoreLoginProxySettings();

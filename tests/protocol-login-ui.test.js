@@ -124,7 +124,7 @@ test('protocol login UI exposes TOTP reset and renders the latest credentials', 
   assert.match(source, /account_start/);
   assert.match(source, /account_log/);
   assert.match(source, /account_done/);
-  assert.match(source, /\{ ids, concurrency, \.\.\.selectedLoginProxyNetwork\(\) \}/);
+  assert.match(source, /\{ ids, action, concurrency, \.\.\.selectedLoginProxyNetwork\(\) \}/);
   assert.match(source, /最新账号凭据/);
   assert.match(source, /credentials\.flatMap/);
   assert.match(server, /app\.post\('\/api\/v2\/accounts\/reset-totp'/);

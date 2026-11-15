@@ -15,7 +15,7 @@ export function registerSystemRoutes(app, {
     ok: true, http: metrics?.snapshot(), requests: app.locals.admission?.snapshot(), workers: workerStats?.(), tasks: accountTaskStats(), browsers: browserSentinelStats(),
     stageTimings: stageMetrics.snapshot(), timingSampleLimit: 512, uptimeSeconds: Math.floor(process.uptime()),
   }));
-  app.get('/api/system/config', (_req, res) => res.json({ ok: true, taskConcurrency: configuredTaskConcurrency(), browserConcurrency: configuredBrowserConcurrency() }));
+  app.get('/api/system/config', (_req, res) => res.json({ ok: true, taskConcurrency: configuredTaskConcurrency(), browserConcurrency: configuredBrowserConcurrency(), totpResetProtocolVersion: 2 }));
   app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'email-server' }));
   app.get('/api/ready', async (_req, res) => {
     if (isShuttingDown()) {

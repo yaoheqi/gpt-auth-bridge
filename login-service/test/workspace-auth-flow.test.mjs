@@ -698,13 +698,14 @@ test('MFA reset uses the cached token and cookies; a rejection after disable can
     let logins = 0;
     flow.loginChatGptWebWithPasswordTotp = async () => {
       logins++;
-      assert.equal(deniedAt, 'disable', 'must not repeat login after a mutation');
+      assert.fail('must not repeat login after a possibly applied mutation');
       throw new Error('fixture requires user action');
     };
-    const result = withCachedWebSession(flow.account, { flow }, value => flow.resetTotpForSession(value));
-    if (deniedAt) await assert.rejects(result, deniedAt === 'disable' ? /user action/ : /token_invalidated/);
+    const result = withCachedWebSession(flow.account, { flow }, value => flow.prepareTotpResetForSession(value));
+    if (deniedAt) await assert.rejects(result, /token_invalidated/);
     else assert.equal((await result).result.secret, 'KRSXG5DSNFXGOIDB');
-    assert.equal(logins, deniedAt === 'disable' ? 1 : 0);
+    assert.equal(logins, 0);
+    assert.equal(calls.some(path => path.endsWith('activate_enrollment')), false);
     assert.equal(calls.filter(path => path.endsWith('disable_in_house')).length, 1);
   }
 });

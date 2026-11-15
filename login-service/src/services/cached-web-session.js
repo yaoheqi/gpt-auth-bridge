@@ -44,7 +44,7 @@ export function needsSessionReauthentication(error) {
 // Use the requested operation itself to validate a cached token; no redundant
 // health probe before logout/MFA. Persist fresh sessions before a later failure.
 export async function withCachedWebSession(account, {
-  flow, persistSession = async () => {}, fallbackSession,
+  flow, persistSession = async () => {}, fallbackSession, allowLogin = true,
 }, operation) {
   let storedSession = {};
   try { storedSession = JSON.parse(account.session_json || '{}'); } catch {}
@@ -70,6 +70,9 @@ export async function withCachedWebSession(account, {
     }
   }
   const login = async forceFresh => {
+    if (!allowLogin || account.totp_reset_pending) {
+      throw new Error('2FA 换绑尚未确认，已禁止使用旧密钥重新登录；请保留新密钥并更新有效 Session 后核对');
+    }
     flow.reuseStoredSession = !forceFresh && hasStoredAuthCookies(account);
     const result = await flow.loginChatGptWebWithPasswordTotp();
     if (!result?.accessToken) throw new Error('协议登录未返回 ChatGPT accessToken');
@@ -96,7 +99,7 @@ export async function withCachedWebSession(account, {
   try { return { result: await operation(session.accessToken, { reused }), session, reused }; }
   catch (error) {
     // Never restart a partially completed MFA mutation with the old TOTP.
-    if (!reused || error.authMutationStarted || !needsSessionReauthentication(error)) throw error;
+    if (!reused || !allowLogin || account.totp_reset_pending || error.authMutationStarted || !needsSessionReauthentication(error)) throw error;
     const alternative = await fallback();
     if (alternative) {
       try { return { result: await operation(alternative.accessToken, { reused: true }), session: alternative, reused: true }; }

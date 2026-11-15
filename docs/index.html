@@ -336,7 +336,7 @@
                 <input class="hidden" id="login-file-input" type="file" accept=".txt,text/plain" multiple />
                 <button class="button button-secondary" id="protocol-logout-all" type="button" title="优先复用浏览器缓存 Session，退出全部 ChatGPT 会话">退出全部会话</button>
                 <button class="button button-secondary" id="self-leave-workspaces" type="button" title="使用输入账号自己的令牌，退出已加入的非 owner 团队工作区">自踢</button>
-                <button class="button button-secondary" id="reset-login-totp" type="button" title="先禁用旧 2FA，再生成并验证新 2FA">重设 2FA</button>
+                <button class="button button-secondary" id="reset-login-totp" type="button" title="新密钥加密保存到浏览器后才激活；未完成的换绑优先恢复">重设 2FA</button>
               </div>
             </div>
             <section class="login-reset-output hidden" id="login-reset-output" aria-labelledby="login-reset-output-title">
@@ -344,8 +344,19 @@
                 <span id="login-reset-output-title">最新账号凭据</span>
                 <button class="button button-secondary" id="copy-login-reset-output" type="button">复制</button>
               </div>
-              <small>换绑成功后生成。每行格式：账号----密码----最新 2FA；请立即保存。</small>
+              <small>已确认换绑成功。每行格式：账号----密码----最新 2FA；请保存备份。</small>
               <pre id="login-reset-credentials"></pre>
+            </section>
+            <section class="login-reset-output hidden" id="login-reset-pending" aria-labelledby="login-reset-pending-title">
+              <div class="login-reset-output-head">
+                <span id="login-reset-pending-title">未完成的 2FA 换绑</span>
+                <button class="button button-secondary" id="resume-login-totp" type="button">继续 / 核对换绑</button>
+                <button class="button button-secondary" id="copy-login-reset-pending" type="button">复制新密钥凭据</button>
+                <button class="button button-secondary" id="download-login-reset-pending" type="button">下载换绑备份</button>
+              </div>
+              <small>请保留下面的新密钥和当前登录。待激活的账号会继续激活；已提交激活的账号只核对状态，不会再次换绑。</small>
+              <ul id="login-reset-pending-status" aria-live="polite"></ul>
+              <pre id="login-reset-pending-credentials"></pre>
             </section>
             <div class="login-controls">
               <fieldset id="login-workspace-mode" class="login-mode-group">

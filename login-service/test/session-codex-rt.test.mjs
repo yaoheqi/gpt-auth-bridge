@@ -89,7 +89,7 @@ test('resolveSessionCodexLoginAction respects loginMode', () => {
 test('sqlite repository persists and reloads storage_state_json', async () => {
   // v7 adds durable Business workspace credential metadata while preserving
   // The storage-state persistence contract is exercised below.
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.equal(SCHEMA_VERSION, 8);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sqlite-storage-state-'));
   const dbPath = path.join(dir, 'app.sqlite');
   const db = openDatabase(dbPath);
