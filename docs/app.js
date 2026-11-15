@@ -4158,6 +4158,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     getConcurrency: () => taskConcurrency,
     isPushBusy: () => pushBusy || monitorBusy || protocolLogoutBusy || selfLeaveBusy || state.logoutInProgress || elements.startProtocolLogin.disabled || elements.resetLoginTotp.disabled,
     getAccounts: () => state.converted.map(convertedHealthAccount),
+    getLoginAccounts: () => ({ input: elements.loginAccounts.value, accounts: state.browserAccounts }),
     onLogoutFailed: logoutEvaluationAccounts,
     onPushPassed: async accounts => {
       try { pushSettings('sub2api'); }

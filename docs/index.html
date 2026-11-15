@@ -149,6 +149,11 @@
             <section class="evaluation-run-status" aria-label="本轮进度">
               <div><p role="status" aria-live="polite" id="evaluation-status">准备就绪，选择测试来源后开始。</p><span id="evaluation-progress-count">0 / 0</span></div>
               <progress id="evaluation-progress" max="1" value="0" aria-label="测试完成进度"></progress>
+              <div class="evaluation-copy-actions" role="group" aria-label="复制测试账号">
+                <button class="button button-secondary" id="evaluation-copy-success" type="button" title="复制本轮糖果题答案正确的账号，同邮箱合并；优先复制原始登录凭据，无凭据时复制邮箱" disabled>复制成功账号（0）</button>
+                <button class="button button-secondary" id="evaluation-copy-failed" type="button" title="复制本轮糖果题未答对的账号，含请求失败；同邮箱有答对工作区则归入成功，未测试或已停止的任务不计入" disabled>复制失败账号（0）</button>
+              </div>
+              <p id="evaluation-copy-status" class="status-line" role="status" hidden></p>
             </section>
             <article class="evaluation-viewer" aria-label="当前任务详情">
               <header class="evaluation-viewer-heading"><div><h2 id="evaluation-case-title">鹈鹕骑自行车</h2><p id="evaluation-case-target">生成内容将在这里逐步呈现</p></div><select id="evaluation-task-select" aria-label="选择测试结果" hidden></select><span id="evaluation-case-status" class="evaluation-badge">等待开始</span></header>

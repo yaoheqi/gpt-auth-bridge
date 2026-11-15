@@ -2028,6 +2028,9 @@ body.is-model-evaluation { background: #f5f7f8; }
 .evaluation-run-status progress { display: block; width: 100%; height: 5px; accent-color: var(--accent); border: 0; border-radius: 3px; overflow: hidden; background: var(--line); }
 .evaluation-run-status progress::-webkit-progress-bar { background: var(--line); }
 .evaluation-run-status progress::-webkit-progress-value { background: var(--accent); }
+.evaluation-run-status > .evaluation-copy-actions { justify-content: flex-start; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.evaluation-copy-actions .button { padding: 8px 12px; font-size: 12px; }
+#evaluation-copy-status { margin: 6px 0 0; }
 .evaluation-viewer { background: white; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .evaluation-viewer-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 24px 16px; }
 .evaluation-viewer-heading h2 { font-size: 19px; margin: 0 0 7px; }

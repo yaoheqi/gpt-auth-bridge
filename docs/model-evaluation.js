@@ -1,7 +1,7 @@
 import { readEvaluationEvents } from './evaluation-stream.js';
 import { evaluationPreviewDocument } from './evaluation-preview.js';
 import { healthCredentialKey } from './account-workspace.js';
-import { evaluationAccountOwner, evaluationLogoutAccounts } from './evaluation-accounts.js';
+import { evaluationAccountOwner, evaluationLogoutAccounts, evaluationResultOwners, evaluationAccountLines } from './evaluation-accounts.js';
 
 const TITLES = { candy: '糖果题', pelican: '鹈鹕骑自行车' };
 const STATUS = { queued: '排队中', connecting: '连接模型', waiting: '等待首字', generating: '生成中', passed: '答案正确（21）', wrong_answer: '答案错误', invalid_format: '格式不完整', manual_review: '待人工评审', error: '请求失败', cancelled: '已停止' };
@@ -9,7 +9,7 @@ const ACTIVE = ['queued', 'connecting', 'waiting', 'generating'];
 const seconds = ms => ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`;
 
 export function initializeModelEvaluation({ request, getEligibility, getHeaders, isWorkspaceCurrent, onImport, getConcurrency,
-  onPushPassed, onLogoutFailed, getAccounts = () => getEligibility().accounts, isPushBusy = () => false }) {
+  onPushPassed, onLogoutFailed, getAccounts = () => getEligibility().accounts, getLoginAccounts = () => ({}), isPushBusy = () => false }) {
   const panel = document.querySelector('#model-evaluation');
   if (!panel) return { reset() {}, refresh() {} };
   const find = id => panel.querySelector(`#evaluation-${id}`);
@@ -20,6 +20,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   let controller, timer, generation = 0, jobs = [], selected = -1;
   let lastPreview = '', lastPreviewAt = 0, previewTimer, previewJob = null;
   let paused = false, rawOutput = false, importing = false, loggingOut = false;
+  let copying = false;
   const logoutAccounts = () => mode() === 'accounts' ? evaluationLogoutAccounts(jobs, getAccounts()) : [];
   const markdown = window.markdownit({ html: false, breaks: true, linkify: false });
   markdown.disable('image');
@@ -66,6 +67,12 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     const logoutCount = logoutAccounts().length;
     find('logout-failed').disabled = Boolean(controller) || importing || pushing || loggingOut || !logoutCount;
     find('logout-failed').textContent = loggingOut ? '正在退出会话…' : `退出非答案正确账号会话（${logoutCount}）`;
+    for (const [outcome, label] of [['success', '成功'], ['failed', '失败']]) {
+      const count = apiMode ? 0 : evaluationResultOwners(jobs, outcome).length;
+      const button = find(`copy-${outcome}`);
+      button.disabled = Boolean(controller) || importing || loggingOut || copying || !count;
+      button.textContent = `复制${label}账号（${count}）`;
+    }
   }
 
   function chooseView(view) {
@@ -169,6 +176,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     status.textContent = '准备就绪，选择测试来源后开始。';
     find('logout-status').hidden = true;
     find('logout-status').textContent = '';
+    clearCopyStatus();
     find('api-key').value = '';
     if (dialog.open) dialog.close(); largeFrame.removeAttribute('srcdoc');
     paused = false; syncPause();
@@ -212,7 +220,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   }
   for (const name of ['pause', 'large-pause']) find(name).addEventListener('click', () => { paused = !paused; syncPause(); });
   for (const target of [frame, largeFrame]) target.addEventListener('load', syncPause);
-  panel.querySelectorAll('input[name="evaluation-source"]').forEach(input => input.addEventListener('change', refresh));
+  panel.querySelectorAll('input[name="evaluation-source"]').forEach(input => input.addEventListener('change', () => { clearCopyStatus(); refresh(); }));
   for (const name of ['preview', 'output']) {
     find(`${name}-tab`).addEventListener('click', () => chooseView(name));
     find(`${name}-tab`).addEventListener('keydown', event => {
@@ -236,6 +244,35 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     await onPushPassed(accounts);
     refresh();
   });
+
+  function clearCopyStatus() {
+    const feedback = find('copy-status');
+    feedback.hidden = true; feedback.textContent = '';
+    feedback.classList.remove('is-ok', 'is-error');
+  }
+
+  for (const [outcome, label] of [['success', '成功'], ['failed', '失败']]) {
+    find(`copy-${outcome}`).addEventListener('click', async () => {
+      if (controller || importing || loggingOut || copying || mode() !== 'accounts') return;
+      const owners = evaluationResultOwners(jobs, outcome);
+      if (!owners.length) return;
+      const isCurrent = isWorkspaceCurrent(), run = generation;
+      const feedback = find('copy-status');
+      copying = true; clearCopyStatus(); refresh();
+      try {
+        const lines = evaluationAccountLines(owners, getLoginAccounts());
+        await navigator.clipboard.writeText(lines.join('\n'));
+        if (!isCurrent() || run !== generation || mode() !== 'accounts') return;
+        const emailOnly = lines.filter((line, index) => line === owners[index]).length;
+        feedback.textContent = `已复制 ${lines.length} 个${label}账号。${emailOnly ? `其中 ${emailOnly} 个无登录凭据，仅复制邮箱。` : ''}`;
+        feedback.classList.add('is-ok'); feedback.hidden = false;
+      } catch {
+        if (!isCurrent() || run !== generation || mode() !== 'accounts') return;
+        feedback.textContent = '复制失败，请允许浏览器访问剪贴板后重试。';
+        feedback.classList.add('is-error'); feedback.hidden = false;
+      } finally { copying = false; if (isCurrent()) refresh(); }
+    });
+  }
 
   find('logout-failed').addEventListener('click', async () => {
     if (controller || importing || loggingOut || isPushBusy()) return;
@@ -273,6 +310,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     const accounts = apiMode ? [null] : [...getEligibility().accounts];
     if (!accounts.length) { status.textContent = '没有可测试账号：仅测试测活通过的非 free 账号，请导入账号或重新测活。'; return; }
     const current = new AbortController(); controller = current;
+    clearCopyStatus();
     find('logout-status').hidden = true;
     find('logout-status').textContent = '';
     const run = ++generation, ownsWorkspace = isWorkspaceCurrent();
