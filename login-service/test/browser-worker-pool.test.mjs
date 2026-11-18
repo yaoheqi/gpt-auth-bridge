@@ -23,6 +23,8 @@ test('resident browsers warm without upstream traffic, survive idle, and replace
     assert.equal(pool.workers.has(workers[0]), false);
     assert.equal(pool.stats().workers, 2);
     assert.equal(pool.stats().diagnostics.counts.browser_started, 3);
+    // The diagnostic precedes the warmup reply and semaphore release.
+    await pool.maintain();
     assert.equal(pool.stats().active, 0);
   } finally { await pool.close(); }
   assert.equal(pool.workers.size, 0);
