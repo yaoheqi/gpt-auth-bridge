@@ -18,6 +18,7 @@ import {
   resolveAccountLoginMethod as defaultResolveAccountLoginMethod,
 } from '../../../domain/accounts/account-domain.js';
 import { resolveOpenAiAccountPassword as defaultResolveOpenAiAccountPassword } from '../auth-records.js';
+import { validationError } from '../../../../lib/validation-error.js';
 
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
 export function createLoginChallengeMethods({
@@ -58,6 +59,43 @@ export function createLoginChallengeMethods({
     assertPasswordTotpCredentials() {
       const issue = protocolLoginCredentialIssue(this.account);
       if (issue) throw Object.assign(new Error(issue), { code: 'LOGIN_CREDENTIALS_MISSING' });
+    },
+
+    isEmailCodeChallenge({ continueUrl = '', pageType = '', payload } = {}) {
+      let path = '';
+      if (continueUrl) {
+        try {
+          const parsed = new URL(continueUrl, AUTH_BASE_URL);
+          if (parsed.origin !== AUTH_BASE_URL) return false;
+          path = parsed.pathname.replace(/\/$/, '').toLowerCase();
+        } catch { return false; }
+      }
+      const page = String(pageType || payload?.page?.type || '').toLowerCase();
+      return ['email_otp_verification', 'email_verification', 'email_otp', 'login_email_otp'].includes(page)
+        || /^\/(?:log-in\/)?(?:email-verification|email-otp)$/.test(path);
+    },
+
+    async preferPasswordLoginStep(result = {}) {
+      if (!this.isEmailCodeChallenge(result)) return result;
+      this.assertPasswordTotpCredentials();
+      if (this.emailPasswordSwitchAttempted || this.passwordSubmitted || this.totpSubmitted) {
+        throw validationError('EMAIL_VERIFICATION_REQUIRED');
+      }
+      this.emailPasswordSwitchAttempted = true;
+      this.log('遇到邮箱验证码，尝试切换为密码登录');
+      // Visit the existing password route with the same transport and cookies.
+      // Only continue if the upstream accepts that route; never submit an email code.
+      const { url } = await openOAuthPage((address, init) => {
+        if (new URL(address).origin !== AUTH_BASE_URL) throw new Error('密码登录切换跳转到非预期域名');
+        return this.fetch(address, init);
+      }, `${AUTH_BASE_URL}/log-in/password`, {
+        headers: this.browserHeaders({ accept: 'text/html,application/xhtml+xml,*/*',
+          referer: result.continueUrl || `${AUTH_BASE_URL}/log-in` }),
+      });
+      if (new URL(url).origin !== AUTH_BASE_URL || this.pathOf(url) !== '/log-in/password') {
+        throw validationError('EMAIL_VERIFICATION_REQUIRED');
+      }
+      return { continueUrl: url, pageType: 'login_password' };
     },
 
     assertSupportedAuthStep({ continueUrl = '' } = {}) {
@@ -179,6 +217,7 @@ export function createLoginChallengeMethods({
       if (!password) throw new Error('账号缺少 OpenAI 密码，无法完成密码登录');
       const sentinelToken = await this.fetchSentinelToken('password_verify');
       this.log('辅助验证完成，提交账号密码');
+      this.passwordSubmitted = true;
       const response = await this.fetch(AUTH_PASSWORD_VERIFY_URL, {
         method: 'POST',
         headers: this.browserHeaders({
@@ -197,6 +236,7 @@ export function createLoginChallengeMethods({
         pageType: String(payload?.page?.type || ''),
         payload,
       };
+      if (this.isEmailCodeChallenge(result)) throw validationError('EMAIL_VERIFICATION_REQUIRED');
       this.assertSupportedAuthStep(result);
       // Some valid MFA responses carry the factor only in the JSON payload.
       const factorId = this.extractMfaFactorId(result);
@@ -240,6 +280,7 @@ export function createLoginChallengeMethods({
       });
       if (sentinelToken) headers['openai-sentinel-token'] = sentinelToken;
       this.log('辅助验证完成，提交 TOTP 2FA 验证码');
+      this.totpSubmitted = true;
       const response = await this.fetch(AUTH_MFA_VERIFY_URL, {
         method: 'POST',
         headers,
@@ -249,11 +290,13 @@ export function createLoginChallengeMethods({
         throw new Error(`MFAVerify请求失败: ${await this.formatErrorResponse(response)}`);
       }
       const payload = await response.json().catch(() => ({}));
-      return {
+      const result = {
         continueUrl: normalizeAuthContinueUrl(payload.continue_url || `${AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`),
         pageType: String(payload?.page?.type || ''),
         payload,
       };
+      if (this.isEmailCodeChallenge(result)) throw validationError('EMAIL_VERIFICATION_REQUIRED');
+      return result;
     },
   };
 }

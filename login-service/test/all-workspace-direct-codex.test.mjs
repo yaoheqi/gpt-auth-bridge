@@ -9,7 +9,7 @@ import { runProtocolLoginPipelineAccount } from '../src/services/protocol-login-
 const jwt = value => `header.${Buffer.from(JSON.stringify(value)).toString('base64url')}.signature`;
 const consent = `${urls.AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`;
 
-for (const scenario of ['normal', 'stored', 'no-personal', 'non-personal', 'missing-team', 'appears-second']) {
+for (const scenario of ['normal', 'stored', 'no-personal', 'non-personal', 'missing-team', 'appears-second', 'email-code']) {
   const hasStoredWebSession = scenario === 'stored';
   const requireNonPersonal = ['non-personal', 'missing-team', 'appears-second'].includes(scenario);
   const expected = scenario === 'missing-team' ? [] : scenario === 'no-personal' || requireNonPersonal ? ['team-one', 'team-two'] : ['personal', 'team-one', 'team-two'];
@@ -44,7 +44,9 @@ for (const scenario of ['normal', 'stored', 'no-personal', 'non-personal', 'miss
         status = 302;
       } else if (url.href === urls.AUTH_AUTHORIZE_CONTINUE_URL) {
         assert.equal(JSON.parse(init.body).username.value, account.email);
-        body = JSON.stringify({ continue_url: '/log-in/password', page: { type: 'login_password' } });
+        body = JSON.stringify(scenario === 'email-code'
+          ? { continue_url: '/email-verification', page: { type: 'email_otp_verification' } }
+          : { continue_url: '/log-in/password', page: { type: 'login_password' } });
       } else if (url.href === urls.AUTH_PASSWORD_VERIFY_URL) {
         assert.equal(JSON.parse(init.body).password, account.password);
         body = JSON.stringify({ page: { type: 'mfa_challenge', payload: { factor_id: 'fixture-factor' } } });
@@ -66,7 +68,7 @@ for (const scenario of ['normal', 'stored', 'no-personal', 'non-personal', 'miss
         assert.equal(new URLSearchParams(init.body).get('code'), selected);
         body = JSON.stringify({ access_token: jwt({ exp: 2_000_000_000, 'https://api.openai.com/auth': { chatgpt_account_id: selected } }),
           refresh_token: `rt-${selected}`, id_token: jwt({ email: account.email }) });
-      } else assert.ok(['/log-in', '/mfa-challenge/fixture-factor'].includes(url.pathname), `Unexpected auth request: ${url.pathname}`);
+      } else assert.ok(['/log-in', '/log-in/password', '/mfa-challenge/fixture-factor'].includes(url.pathname), `Unexpected auth request: ${url.pathname}`);
       const response = new Response(body, { status, headers });
       Object.defineProperty(response, 'url', { value: address });
       return response;

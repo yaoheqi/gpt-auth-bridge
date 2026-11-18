@@ -79,6 +79,8 @@ def check_incremental_progress(browser, url):
             sendProgress('account_done', {email: 'fixture-154@example.com', ok: false, error: 'fixture-error',
                 validationFailure: {code: 'BROWSER_NAVIGATION_FAILED', stage: 'browser_navigation',
                     attempt: 1, reason: 'EDGE_CHALLENGE', httpStatus: 403}});
+            sendProgress('account_done', {email: 'fixture-155@example.com', ok: false, error: 'fixture-error',
+                validationFailure: {code: 'EMAIL_VERIFICATION_REQUIRED', retryable: false}});
             sendProgress('account_done', {email: 'fixture-150@example.com', ok: true, businessSuccess: 0,
                 timings: {total: {durationMs: 2500, calls: 1}}});
             sendProgress('summary', {ok: true, success: 1, failed: 0, results: [], accounts: []});
@@ -92,9 +94,12 @@ def check_incremental_progress(browser, url):
         expect(page.locator('.login-account-progress').nth(153).locator('.login-account-stage')).to_have_text('验证密码失败')
         expect(page.locator('.login-account-progress').nth(154).locator('.login-account-stage')).to_have_text('上游访问受限')
         expect(page.locator('.login-account-progress').nth(154).locator('.login-account-log')).to_contain_text('Cloudflare challenge，HTTP 403')
+        expect(page.locator('.login-account-progress').nth(155).locator('.login-account-stage')).to_have_text('需要邮箱验证')
         page.wait_for_function("async () => (await browserWorkspace.read())?.state?.loginProgress?.[150]?.[1]?.timings?.total?.durationMs === 2500")
         page.reload()
         expect(page.locator('.login-account-progress')).to_have_count(200)
+        expect(page.locator('.login-account-progress').nth(155).locator('.login-account-stage')).to_have_text('需要邮箱验证')
+        expect(page.locator('.login-account-progress').nth(155).locator('.login-account-log')).to_contain_text('已停止自动重试')
         expect(page.locator('.login-account-progress').nth(154).locator('.login-account-stage')).to_have_text('上游访问受限')
         expect(page.locator('.login-account-progress').nth(154).locator('.login-account-log')).to_contain_text('Cloudflare challenge，HTTP 403')
         expect(page.locator('.login-account-progress').nth(151).locator('.login-account-stage')).to_have_text('辅助验证失败')

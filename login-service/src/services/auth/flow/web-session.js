@@ -304,7 +304,8 @@ export function createWebSessionMethods({
       this.assertSupportedAuthStep(started);
       const pathName = this.pathOf(started?.continueUrl || '');
       const credentialFallback = this.isPasswordTotpAccount()
-        && (pathName === '/log-in' || pathName === '/log-in/password' || pathName.includes('/mfa'));
+        && (pathName === '/log-in' || pathName === '/log-in/password' || pathName.includes('/mfa')
+          || this.isEmailCodeChallenge(started));
       const allowed = pathName === '/oauth/authorize'
         || pathName === '/oauth/consent'
         || pathName === '/sign-in-with-chatgpt/codex/consent'

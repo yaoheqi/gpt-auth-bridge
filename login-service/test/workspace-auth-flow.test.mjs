@@ -214,11 +214,140 @@ for (const destination of [CONSENT, CALLBACK]) {
   });
 }
 
-test('OAuth transitions cannot resume email verification or an unrelated host', async () => {
+test('OAuth transitions cannot resume an unrelated host', async () => {
   const flow = flowWithTransport(() => assert.fail('unsupported step must not reach the network'));
-  for (const url of [`${authUrls.AUTH_BASE_URL}/email-verification`, 'https://unrelated.example/api/oauth/oauth2/auth']) {
+  for (const url of ['https://unrelated.example/email-verification', 'https://unrelated.example/api/oauth/oauth2/auth']) {
     await assert.rejects(flow.advanceAuthStep(url), { code: 'UNSUPPORTED_LOGIN_STEP' });
   }
+});
+
+test('Web and Codex switch email-code steps to password once while retaining OAuth cookies', async () => {
+  for (const phase of ['chatgpt', 'codex']) {
+    for (const entry of ['landing', 'authorize', 'page-type']) {
+      const requests = [];
+      const callback = phase === 'codex' ? CALLBACK : 'https://chatgpt.com/api/auth/callback/openai?code=fixture';
+      const flow = flowWithTransport(async (url, init = {}) => {
+        const path = new URL(url).pathname;
+        requests.push(path);
+        assert.match(init.headers.cookie, /auth-context=original/);
+        let body;
+        if (url === authUrls.AUTH_AUTHORIZE_CONTINUE_URL) {
+          body = { page: { type: 'email_otp_verification' }, ...(entry === 'authorize' ? { continue_url: '/email-verification' } : {}) };
+        } else if (path === '/log-in/password') {
+          assert.equal(init.method, 'GET');
+          return response(url, { headers: { 'set-cookie': 'password-route=selected; Path=/; Secure' } });
+        } else if (url === authUrls.AUTH_PASSWORD_VERIFY_URL) {
+          assert.match(init.headers.cookie, /password-route=selected/);
+          assert.equal(JSON.parse(init.body).password, flow.account.password);
+          body = { page: { type: 'mfa_challenge', payload: { factor_id: 'fixture-factor' } } };
+        } else if (path === '/mfa-challenge/fixture-factor') return response(url);
+        else if (url === authUrls.AUTH_MFA_VERIFY_URL) {
+          assert.equal(JSON.parse(init.body).type, 'totp');
+          body = { continue_url: callback };
+        } else assert.fail(`Unexpected request: ${path}`);
+        return response(url, { body: JSON.stringify(body) });
+      });
+      flow.fetchSentinelToken = async () => 'fixture';
+      await flow.jar.setCookie('auth-context=original; Path=/; Secure', authUrls.AUTH_BASE_URL);
+      const originalJar = flow.jar;
+      const originalFetch = flow.fetch;
+      assert.equal(await flow.advanceAuthStep(`${authUrls.AUTH_BASE_URL}/${entry === 'landing' ? 'email-verification' : 'log-in'}`, { phase }), callback);
+      assert.equal(requests.filter(path => path === '/log-in/password').length, 1);
+      assert.equal(requests.filter(path => path === '/api/accounts/password/verify').length, 1);
+      assert.equal(requests.filter(path => path === '/api/accounts/mfa/verify').length, 1);
+      assert.equal(flow.jar, originalJar);
+      assert.equal(flow.fetch, originalFetch);
+      assert.ok(flow.logs.some(line => /邮箱验证码.*密码登录/.test(line)));
+    }
+  }
+});
+
+test('mandatory email verification stops without replaying password or TOTP', async () => {
+  for (const after of ['switch', 'password', 'totp']) {
+    const posts = [];
+    const flow = flowWithTransport(async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (init.method === 'POST') posts.push(path);
+      if (path === '/log-in/password') return response(url, { status: 302, headers: { location: '/email-verification' } });
+      if (path === '/email-verification' || path === '/mfa-challenge/factor') return response(url);
+      if (url === authUrls.AUTH_PASSWORD_VERIFY_URL) return response(url, { body: JSON.stringify(after === 'password'
+        ? { continue_url: '/email-verification', page: { type: 'email_otp_verification' } }
+        : { continue_url: '/mfa-challenge/factor', page: { type: 'mfa_challenge' } }) });
+      if (url === authUrls.AUTH_MFA_VERIFY_URL) return response(url, { body: JSON.stringify({ page: { type: 'email_otp_verification' } }) });
+      assert.fail(`Unexpected request: ${path}`);
+    });
+    flow.fetchSentinelToken = async () => 'fixture';
+    await assert.rejects(flow.advanceAuthStep(`${authUrls.AUTH_BASE_URL}/${after === 'switch' ? 'email-verification' : 'log-in/password'}`),
+      { code: 'EMAIL_VERIFICATION_REQUIRED', retryable: false });
+    assert.equal(posts.filter(path => path === '/api/accounts/password/verify').length, after === 'switch' ? 0 : 1);
+    assert.equal(posts.filter(path => path === '/api/accounts/mfa/verify').length, after === 'totp' ? 1 : 0);
+  }
+});
+
+test('email-to-password switching rejects foreign redirects and never navigates without credentials', async () => {
+  const flow = flowWithTransport(async url => {
+    assert.equal(new URL(url).origin, authUrls.AUTH_BASE_URL);
+    return response(url, { status: 302, headers: { location: 'https://unrelated.example/log-in/password' } });
+  });
+  await assert.rejects(flow.advanceAuthStep(`${authUrls.AUTH_BASE_URL}/email-verification`), /非预期域名/);
+  const missing = flowWithTransport(() => assert.fail('missing credentials must not start switching'));
+  missing.account.password = '';
+  await assert.rejects(missing.advanceAuthStep(`${authUrls.AUTH_BASE_URL}/email-verification`), { code: 'LOGIN_CREDENTIALS_MISSING' });
+});
+
+test('email-code recognition supports initial redirects and stored-session reauthentication only on the auth host', async () => {
+  for (const path of ['/email-verification', '/log-in/email-otp', '/email-otp', '/log-in/email-verification']) {
+    const flow = flowWithTransport(async url => new URL(url).pathname === '/oauth/authorize'
+      ? response(url, { status: 302, headers: { location: path, 'set-cookie': 'oai-did=fixture-device; Path=/; Secure' } })
+      : response(url));
+    const started = await flow.startOAuthSession();
+    assert.equal(started.continueUrl, authUrls.AUTH_BASE_URL + path);
+    flow.requireStoredSession = true;
+    assert.doesNotThrow(() => flow.assertStoredSessionContinuation(started));
+    assert.equal(flow.isEmailCodeChallenge({ continueUrl: 'https://unrelated.example' + path }), false);
+  }
+});
+
+test('a completed TOTP challenge cannot restart password login through a later OAuth redirect', async () => {
+  const transition = `${authUrls.AUTH_BASE_URL}/api/oauth/oauth2/auth`;
+  const flow = flowWithTransport(async url => {
+    if (url === authUrls.AUTH_MFA_VERIFY_URL) return response(url, { body: JSON.stringify({ continue_url: transition }) });
+    if (url === transition) return response(url, { status: 302, headers: { location: '/email-verification' } });
+    assert.ok(['/mfa-challenge/factor', '/email-verification'].includes(new URL(url).pathname));
+    return response(url);
+  });
+  flow.fetchSentinelToken = async () => 'fixture';
+  await assert.rejects(flow.advanceAuthStep(`${authUrls.AUTH_BASE_URL}/mfa-challenge/factor`), { code: 'EMAIL_VERIFICATION_REQUIRED' });
+  assert.equal(flow.totpSubmitted, true);
+  assert.equal(flow.passwordSubmitted, undefined);
+});
+
+test('Session login used by logout and MFA reset shares the email-to-password path', async () => {
+  const requests = [];
+  const callback = 'https://chatgpt.com/api/auth/callback/openai?code=fixture';
+  const flow = flowWithTransport(async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    requests.push(path);
+    if (path === '/log-in/password') return response(url);
+    if (url === authUrls.AUTH_PASSWORD_VERIFY_URL) return response(url, { body: JSON.stringify({
+      continue_url: '/mfa-challenge/factor', page: { type: 'mfa_challenge' } }) });
+    if (path === '/mfa-challenge/factor') return response(url);
+    if (url === authUrls.AUTH_MFA_VERIFY_URL) return response(url, { body: JSON.stringify({ continue_url: callback }) });
+    assert.fail(`Unexpected request: ${path}`);
+  });
+  flow.fetchSentinelToken = async () => 'fixture';
+  flow.logProtocolHardening = () => {};
+  flow.startChatGptWebSignIn = async () => ({ continueUrl: authUrls.AUTH_BASE_URL + '/email-verification' });
+  flow.followChatGptWebSession = async url => {
+    assert.equal(url, callback);
+    return { accessToken: 'fixture-web-session', session: { user: { email: flow.account.email } } };
+  };
+  let persisted = false;
+  const acquired = await withCachedWebSession(flow.account, { flow,
+    persistSession: async session => { assert.equal(session.accessToken, 'fixture-web-session'); persisted = true; },
+  }, async token => { assert.equal(persisted, true); return token; });
+  assert.equal(acquired.result, 'fixture-web-session');
+  assert.deepEqual(requests, ['/log-in/password', '/api/accounts/password/verify', '/mfa-challenge/factor', '/api/accounts/mfa/verify']);
 });
 
 test('invalid authorize and password responses fail without advancing login', async () => {

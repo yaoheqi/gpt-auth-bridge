@@ -36,7 +36,7 @@ export function createOAuthNavigationMethods({
 
     isAuthStartUrl(url) {
       const path = this.pathOf(url);
-      return [
+      return this.isEmailCodeChallenge({ continueUrl: url }) || [
         '/log-in',
         '/log-in/password',
         '/log-in/mfa',
@@ -88,6 +88,7 @@ export function createOAuthNavigationMethods({
       const chatgptLike = phase === 'chatgpt';
       if (!this.requireStoredSession) this.assertPasswordTotpCredentials();
       for (let step = 0; step < 14; step += 1) {
+        url = (await this.preferPasswordLoginStep({ continueUrl: url })).continueUrl;
         this.assertSupportedAuthStep({ continueUrl: url });
         await this.humanPause(step === 0 ? 'think' : 'navigate');
         const path = this.pathOf(url);
@@ -126,6 +127,7 @@ export function createOAuthNavigationMethods({
           this.log('提交登录邮箱');
           await this.humanPause('type');
           let result = await this.authorizeContinue({ screenHint, referer });
+          result = await this.preferPasswordLoginStep(result);
           const pageType = String(result.pageType || '').toLowerCase();
           const nextPath = this.pathOf(result.continueUrl);
 
@@ -270,6 +272,10 @@ export function createOAuthNavigationMethods({
     async followOAuthRedirects(startURL) {
       let currentURL = startURL;
       for (let hop = 0; hop < 10; hop += 1) {
+        if (this.isEmailCodeChallenge({ continueUrl: currentURL })) {
+          currentURL = await this.advanceAuthStep(currentURL, { phase: 'codex' });
+          continue;
+        }
         this.assertSupportedAuthStep({ continueUrl: currentURL });
         if (this.isPhoneChallengeUrl(currentURL)) {
           if (this.forbidPhoneChallenge) throw new Error(`Codex OAuth 仍要求手机验证，已按要求禁止新接码: ${this.pathOf(currentURL) || currentURL}`);

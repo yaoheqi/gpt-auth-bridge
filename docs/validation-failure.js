@@ -13,6 +13,7 @@ export const VALIDATION_FAILURES = Object.freeze({
   VALIDATION_PROVIDER_FAILED: '备用验证通道失败，请检查配置或服务状态',
   VALIDATION_CHALLENGE_FAILED: '辅助验证未完成，请稍后重试或人工处理',
   VALIDATION_CONTEXT_MISMATCH: '验证结果与当前登录上下文不一致，已拒绝继续提交',
+  EMAIL_VERIFICATION_REQUIRED: '上游仍要求邮箱验证，无法继续密码登录；已停止自动重试，请在官方页面完成验证后再试',
 });
 const stages = new Set(['sentinel', 'requirements', 'provider', 'browser_queue', 'browser_start',
   'browser_context', 'browser_navigation', 'browser_verify', 'browser_cleanup']);
@@ -65,6 +66,7 @@ export function validationFailureLabel(input) {
   const failure = validationFailureFields(input).validationFailure;
   if (!failure) return '';
   if (isValidationAccessBlocked(failure)) return failure.httpStatus === 429 ? '上游请求限流' : '上游访问受限';
+  if (failure.code === 'EMAIL_VERIFICATION_REQUIRED') return '需要邮箱验证';
   if (failure.code === 'VALIDATION_TIMEOUT') return '辅助验证超时';
   if (failure.code === 'VALIDATION_CANCELLED') return '辅助验证已取消';
   return '辅助验证失败';

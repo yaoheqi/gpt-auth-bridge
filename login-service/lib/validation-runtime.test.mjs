@@ -19,6 +19,22 @@ import { createBrowserDiagnostics } from './browser-diagnostics.js';
 const challenge = async () => ({ ok: true, json: async () => ({ turnstile: { dx: 'fixture' } }) });
 const account = { id: 'fixture', email: 'fixture@example.com', password: 'fixture', two_factor_secret: 'JBSWY3DPEHPK3PXP' };
 
+test('required email verification survives both pipelines without repeating account login', async () => {
+  for (const workspaceMode of ['session', 'all']) {
+    let attempts = 0;
+    const login = async () => { attempts++; throw validationError('EMAIL_VERIFICATION_REQUIRED'); };
+    const result = await runProtocolLoginPipelineAccount(account, { workspaceMode, requireNonPersonal: true,
+      runSessionLogin: login, runAllWorkspaces: login });
+    assert.equal(attempts, 1);
+    assert.equal(result.validationFailure.code, 'EMAIL_VERIFICATION_REQUIRED');
+    assert.equal(result.validationFailure.retryable, false);
+    assert.equal(result.terminalReason, undefined, 'email verification does not mean invalid credentials');
+    assert.equal(validationFailureLabel(result), '需要邮箱验证');
+    assert.match(validationFailureHint(result), /上游仍要求邮箱验证/);
+    assert.equal(retryPolicyForFailure(classifyAuthFailure(result)).retry, false);
+  }
+});
+
 test('edge challenges retain HTTP diagnostics and stop account retries without blaming credentials', async () => {
   const failure = decodeBrowserFailure({ code: 'BROWSER_NAVIGATION_FAILED', stage: 'browser_navigation',
     reason: 'EDGE_CHALLENGE', httpStatus: 503, attempt: 1, body: 'private-body' });
