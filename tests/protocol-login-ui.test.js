@@ -5,6 +5,27 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import test from 'node:test';
 import { createAuthNetworkPolicy } from '../login-service/src/services/auth/network-policy.js';
+import { resolveSessionProxy } from '../login-service/lib/proxy-config.js';
+
+test('default browser egress follows the server proxy while explicit alternatives stay independent', () => {
+  const { protocolRequestNetwork: network } = createAuthNetworkPolicy();
+  const env = { OPENAI_PROXY_URL: 'http://fixture-user:fixture-secret@default.example:8080' };
+  const resolve = (body, settings = env) => {
+    const selected = network(body);
+    return resolveSessionProxy({ pool: selected.proxyPool, directWhenEmpty: selected.directWhenProxyPoolEmpty,
+      env: settings, refreshSession: false });
+  };
+  for (const body of [{ browserState: {} }, { proxyMode: 'direct', proxyPool: 'ignored.example:8080' }]) {
+    const route = resolve(body);
+    assert.equal(route.proxyUrl, env.OPENAI_PROXY_URL);
+    assert.equal(route.mode, 'local');
+    assert.doesNotMatch(route.label, /fixture-user|fixture-secret/);
+    assert.equal(resolve(body, {}).mode, 'direct');
+  }
+  assert.equal(resolve({ proxyMode: 'local', localProxyPort: 8899 }).proxyUrl, 'http://127.0.0.1:8899/');
+  assert.equal(resolve({ proxyMode: 'pool', proxyPool: 'custom.example:8080' }).proxyUrl, 'http://custom.example:8080/');
+  assert.equal(resolve({ proxyMode: 'pool', proxyPool: '' }).mode, 'direct');
+});
 
 test('protocol requests expose direct, local and custom pool modes', async () => {
   const { protocolRequestNetwork: network } = createAuthNetworkPolicy();

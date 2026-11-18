@@ -3358,7 +3358,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         ? `使用本地代理 127.0.0.1:${elements.loginProxyLocalPort.value || "7890"}，协议登录将按账号固定使用。`
         : pool
         ? (elements.loginProxyPool.value.trim() ? "已配置浏览器代理池，协议登录将按账号固定一个代理。" : "代理池为空，协议登录将直连。")
-        : "当前使用直连。";
+        : "使用服务器默认出口：已配置代理时走代理，未配置时直连。";
     }
   }
 

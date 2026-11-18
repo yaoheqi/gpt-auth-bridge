@@ -1,16 +1,16 @@
 import { parseProxyPool } from '../../../lib/proxy-config.js';
 import { proxyHealthRegistry as defaultProxyHealthRegistry } from '../../../lib/proxy-health.js';
 
-/** Resolve the requested egress once per account. The built-in pool is read
- * request-owned settings default to direct.
- */
+/** Resolve egress once per account. The default follows OPENAI_PROXY_URL;
+ * explicit local/custom selections retain their own routing policy. */
 export function createAuthNetworkPolicy({
   proxyHealthRegistry = defaultProxyHealthRegistry,
   random = Math.random,
 } = {}) {
   function protocolRequestNetwork(body = {}) {
     const proxyMode = String(body.proxyMode || '').trim().toLowerCase();
-    if (proxyMode === 'direct') return { proxyPool: '', directWhenProxyPoolEmpty: true };
+    // Keep the persisted "direct" value compatible with the default UI option.
+    if (proxyMode === 'direct') return { proxyPool: '', directWhenProxyPoolEmpty: false };
     if (proxyMode === 'local') {
       const rawPort = body.localProxyPort ?? body.local_proxy_port ?? 7890;
       const port = Number(String(rawPort).trim());
@@ -26,7 +26,7 @@ export function createAuthNetworkPolicy({
       parseProxyPool(proxyPool);
       return { proxyPool, directWhenProxyPoolEmpty: true };
     }
-    if (body.browserState) return { proxyPool: '', directWhenProxyPoolEmpty: true };
+    if (body.browserState) return { proxyPool: '', directWhenProxyPoolEmpty: false };
     return { proxyPool: undefined, directWhenProxyPoolEmpty: false };
   }
 

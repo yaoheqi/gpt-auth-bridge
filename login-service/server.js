@@ -635,7 +635,7 @@ function createSessionDeviceAndProxy({ proxyPool, directWhenProxyPoolEmpty = fal
   const hasRequestProxyPool = proxyPool !== undefined;
   const proxy = resolveSessionProxy({
     pool: hasRequestProxyPool ? String(proxyPool || '') : settings.proxyPool,
-    env: hasRequestProxyPool ? {} : process.env,
+    env: hasRequestProxyPool && directWhenProxyPoolEmpty ? {} : process.env,
     directWhenEmpty: hasRequestProxyPool && directWhenProxyPoolEmpty,
     refreshSession: !hasRequestProxyPool,
   });

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import net from 'node:net';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +49,46 @@ async function startApp(runtime, overrides = {}) {
     throw error;
   }
 }
+
+test('default login uses the configured server proxy and a rejected proxy never submits credentials', { timeout: 30000 }, async () => {
+  const runtime = await mkdtemp(path.join(os.tmpdir(), 'default-proxy-app-'));
+  const connects = [];
+  const proxy = http.createServer((_req, res) => res.writeHead(403).end());
+  proxy.on('connect', (req, socket) => {
+    connects.push({ target: req.url, auth: req.headers['proxy-authorization'] });
+    socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+  });
+  proxy.listen(0, '127.0.0.1');
+  await once(proxy, 'listening');
+  let app;
+  try {
+    app = await startApp(runtime, { TASK_CONCURRENCY: '1', BROWSER_REUSE_ENABLED: 'false',
+      OPENAI_PROXY_URL: `http://fixture-user:fixture-proxy-secret@127.0.0.1:${proxy.address().port}`,
+      PROXY_CHAIN_URL: '', APP_PROXY_PREFLIGHT_TIMEOUT_MS: '1000' });
+    const account = { id: 'default-proxy-fixture', email: 'fixture@example.com',
+      openai_password: 'fixture-password', two_factor_secret: 'JBSWY3DPEHPK3PXP' };
+    for (const selection of [{ proxyMode: 'direct', proxyPool: 'ignored.example:8080' }, {}]) {
+      const before = connects.filter(item => item.target === 'auth.openai.com:443').length;
+      const response = await fetch(`${app.url}/api/v2/accounts/protocol-login-pipeline`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: [account.id], workspaceMode: 'all', requireNonPersonal: false,
+          browserState: { accounts: [account], settings: {} }, ...selection }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const stream = await response.text();
+      assert.equal(response.status, 200);
+      assert.ok(connects.filter(item => item.target === 'auth.openai.com:443').length > before);
+      assert.match(stream, /代理连通性检测失败/);
+      assert.match(stream, /未开始账号登录/);
+      assert.doesNotMatch(stream, /提交账号密码|fixture-proxy-secret/);
+    }
+    assert.ok(connects.some(item => item.auth === `Basic ${Buffer.from('fixture-user:fixture-proxy-secret').toString('base64')}`));
+  } finally {
+    await app?.stop();
+    await new Promise(resolve => proxy.close(resolve));
+    await rm(runtime, { recursive: true, force: true });
+  }
+});
 
 test('one entrypoint serves the UI, canonical/legacy APIs, SSE and browser-owned records', { timeout: 60000 }, async () => {
   const runtime = await mkdtemp(path.join(os.tmpdir(), 'unified-app-'));

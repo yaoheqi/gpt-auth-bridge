@@ -372,14 +372,14 @@
               <div class="login-proxy-head">
                 <div class="login-proxy-title">
                   <span id="login-proxy-title">协议登录网络</span>
-                  <small>配置只保存在当前浏览器，不写入服务器。可选择直连、本地代理或代理池。</small>
+                  <small>页面配置只保存在当前浏览器。默认出口遵循服务器设置，也可选择本地代理或自定义代理池。</small>
                 </div>
               </div>
               <div class="login-proxy-options">
                 <fieldset id="login-proxy-mode" class="login-mode-group">
                   <legend>出口模式</legend>
                   <div class="login-mode-options">
-                    <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="direct" checked />直连</label>
+                    <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="direct" checked />默认出口</label>
                     <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="local" />本地代理</label>
                     <label class="login-mode-option"><input type="radio" name="login-proxy-mode" value="pool" />自定义代理池</label>
                   </div>
@@ -391,7 +391,7 @@
                   <textarea id="login-proxy-pool" rows="3" spellcheck="false" placeholder="每行一个代理，支持 host:port:user:pass、user:pass@host:port 或 socks5://user:pass@host:port"></textarea>
                 </label>
               </div>
-              <div class="status-line" id="login-proxy-status" role="status" aria-live="polite">当前使用直连。</div>
+              <div class="status-line" id="login-proxy-status" role="status" aria-live="polite">使用服务器默认出口：已配置代理时走代理，未配置时直连。</div>
             </section>
             <div class="login-workbench-actions">
               <button class="button button-primary" id="start-protocol-login" type="button">开始获取全部 RT</button>
