@@ -6,6 +6,7 @@ import { wantsEventStream, runSseResponse } from '../batch/sse-runner.js';
 import { withCachedWebSession } from '../../services/cached-web-session.js';
 import { refreshSessionForLogout } from '../../services/logout-refresh-session.js';
 import { sendOperationError } from '../../http/operation-error.js';
+import { validationFailureFields } from '../../../lib/validation-error.js';
 
 export function registerProtocolLogoutAllRoutes(app, {
   requireAdmin, ensureDatabase, findAccountById, getConcurrency, protocolRequestNetwork, createFlow, clearAuthState, persistSession, updateAccount,
@@ -44,7 +45,8 @@ export function registerProtocolLogoutAllRoutes(app, {
             });
           } catch (error) {
             const terminalReason = terminalLoginFailure(error);
-            result = { ok: false, error: terminalErrorMessage[terminalReason] || sanitizeLogMessage(error.message || '退出全部会话失败') };
+            result = { ok: false, error: terminalErrorMessage[terminalReason] || sanitizeLogMessage(error.message || '退出全部会话失败'),
+              ...validationFailureFields(error) };
             if (terminalReason) result.terminalReason = terminalReason;
           }
           if (result.terminalReason) monitorCoordinator.record(account, result.terminalReason);

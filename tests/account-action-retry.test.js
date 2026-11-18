@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
+import { validationFailureFields, validationFailureHint } from '../docs/validation-failure.js';
 
 const source = readFileSync(new URL('../docs/app.js', import.meta.url), 'utf8');
 function functionSource(name) {
@@ -17,6 +18,7 @@ function harness(key, batches) {
   const input = ['a@example.com----password', 'b@example.com----password', 'c@example.com----password'];
   const elements = { loginAccounts: { value: input.join('\n') }, startProtocolLogin: {}, resetLoginTotp: {}, exportLoginSessions: {}, loginStatus: {} };
   const context = vm.createContext({ state, elements, monitorBusy: false, selfLeaveBusy: false, protocolLogoutBusy: false,
+    validationFailureFields, validationFailureHint,
     window: { confirm: () => true }, document: { querySelectorAll: () => [] },
     workspaceTaskIsCurrent: () => () => true, requireCurrentWorkspace: () => {},
     parseLoginAccounts: value => value.split('\n'), loginAccountEmail: line => line.split('----')[0],

@@ -5,6 +5,7 @@ import { createApp } from '../src/app/create-app.js';
 import { registerProtocolLogoutAllRoutes } from '../src/api/routes/protocol-logout-all-routes.js';
 import { monitorCoordinator } from '../src/services/monitor-coordinator.js';
 import { readLogoutAllResponse } from '../src/services/logout-all-response.js';
+import { validationError } from '../lib/validation-error.js';
 
 function fixture({ fail = false } = {}) {
   const account = {
@@ -58,6 +59,17 @@ async function startRoute(t, f, { stream = false } = {}) {
 function events(text) {
   return [...text.matchAll(/event: ([^\n]+)\ndata: (.+?)\n\n/g)].map(match => ({ name: match[1], data: JSON.parse(match[2]) }));
 }
+
+test('logout keeps workspace discovery failures distinct and never logs out or clears auth after failed login', async t => {
+  const f = fixture();
+  f.flow.loginChatGptWebWithPasswordTotp = async () => { f.calls.push('login'); throw validationError('WORKSPACE_DISCOVERY_FAILED'); };
+  const response = await startRoute(t, f, { stream: true });
+  const done = events(await response.text()).find(item => item.name === 'account_done').data;
+  assert.equal(done.ok, false);
+  assert.equal(done.validationFailure.code, 'WORKSPACE_DISCOVERY_FAILED');
+  assert.equal(done.validationFailure.retryable, false);
+  assert.deepEqual(f.calls, ['login']);
+});
 
 test('protocol logout-all requires confirmation and uses password/TOTP flow', async t => {
   const f = fixture();

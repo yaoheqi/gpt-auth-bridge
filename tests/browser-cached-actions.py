@@ -27,7 +27,9 @@ def check_cached_actions(browser, url):
             if row['id'] == 'reset-failed':
                 assert row['two_factor_secret'] == old_secret
                 row['totp_reset_pending'] = None
-                results.append({'id': row['id'], 'email': row['email'], 'ok': False, 'phase': 'failed', 'error': 'fixture HTTP 429'})
+                results.append({'id': row['id'], 'email': row['email'], 'ok': False, 'phase': 'failed', 'error': 'fixture HTTP 429',
+                                **({'validationFailure': {'code': 'WORKSPACE_DISCOVERY_FAILED', 'retryable': False}}
+                                   if action == 'protocol-logout-all' else {})})
                 continue
             if action == 'reset-totp' and phase == 'prepare':
                 assert row['session_access_token'] == 'cached-session-reset-ok'
@@ -87,6 +89,8 @@ def check_cached_actions(browser, url):
         page.once('dialog', lambda dialog: dialog.accept())
         page.locator('#protocol-logout-all').click()
         expect(page.locator('#login-status')).to_contain_text('退出全部会话完成：成功 1，失败 1')
+        expect(page.locator('.login-account-progress').nth(1).locator('.login-account-stage')).to_have_text('工作区授权失败')
+        expect(page.locator('#login-progress-list')).not_to_contain_text('登录成功失败')
         page.wait_for_function("async () => (await browserWorkspace.read()).state.monitorStopped['reset-ok'] === 'sessions_logged_out'")
         saved = page.evaluate('() => browserWorkspace.read()')['state']
         assert saved['loginSessionIds'] == ['reset-failed']
@@ -98,6 +102,8 @@ def check_cached_actions(browser, url):
         assert saved['cpaSettings']['managementKey'] == 'fixture-key'
         expect(page.locator('#reset-login-totp')).to_be_enabled()
         expect(page.locator('#self-leave-workspaces')).to_be_enabled()
+        page.reload()
+        expect(page.locator('.login-account-progress').nth(1).locator('.login-account-stage')).to_have_text('工作区授权失败')
         assert calls == ['reset-totp:prepare', 'reset-totp:activate', 'protocol-logout-all']
         assert not errors, errors
     finally:

@@ -2097,7 +2097,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
 
   const LOGIN_STAGES = ["连接 Codex", "输入账号", "验证密码", "验证 2FA", "获取首个 RT", "授权工作区", "完成"];
   const SESSION_LOGIN_STAGES = ["连接 ChatGPT", "输入账号", "验证密码", "验证 2FA", "获取 Session"];
-  const ACCOUNT_ACTION_STAGES = ["准备账号操作", "输入账号", "验证密码", "验证 2FA", "登录成功", "处理工作区", "完成"];
+  const ACCOUNT_ACTION_STAGES = ["准备账号操作", "输入账号", "验证密码", "验证 2FA", "建立会话", "处理工作区", "完成"];
   function loginStagesForMode(mode) {
     return mode === 'session' ? SESSION_LOGIN_STAGES : mode === 'action' ? ACCOUNT_ACTION_STAGES : LOGIN_STAGES;
   }
@@ -3681,8 +3681,9 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       const result = await loginIcloudStream('/api/v2/accounts/protocol-logout-all', { ids, confirmed: true, ...selectedLoginProxyNetwork() }, (name, data) => {
         const record = loginProgressRecord(data);
         if (name === 'account_start') appendLoginProgress(record, '优先复用缓存会话，开始退出全部会话', { stage: 0, status: 'running' });
-        if (name === 'account_log') appendLoginProgress(record, data.msg, { stage: 4, status: 'running', level: data.level });
+        if (name === 'account_log') appendLoginProgress(record, data.msg, { stage: inferLoginStage(data.msg, record?.stage || 0, 'chatgpt'), status: 'running', level: data.level });
         if (name === 'account_done') {
+          if (record) record.validationFailure = validationFailureFields(data).validationFailure;
           outcomes.set(String(data.email || record?.email || '').toLowerCase(), { ...data, email: data.email || record?.email });
           if (data.ok) {
             markMonitorStopped(data.id, 'sessions_logged_out');
@@ -3699,7 +3700,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
             persistBrowserWorkspace(true);
           }
           if (data.terminalReason) markMonitorStopped(data.id, data.terminalReason);
-          appendLoginProgress(record, data.error || (data.ok ? '全部会话已退出' : '退出全部会话失败'), { stage: 4, status: data.ok ? 'success' : 'error' });
+          appendLoginProgress(record, validationFailureHint(data) || data.error || (data.ok ? '全部会话已退出' : '退出全部会话失败'),
+            { stage: data.ok ? 6 : record?.stage || 0, status: data.ok ? 'success' : 'error' });
         }
       });
       requireCurrentWorkspace(isCurrent);
