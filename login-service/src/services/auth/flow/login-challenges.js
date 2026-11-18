@@ -19,6 +19,7 @@ import {
 } from '../../../domain/accounts/account-domain.js';
 import { resolveOpenAiAccountPassword as defaultResolveOpenAiAccountPassword } from '../auth-records.js';
 import { validationError } from '../../../../lib/validation-error.js';
+import { readAuthWorkspacePayload } from '../../../../lib/workspace-page.js';
 
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
 export function createLoginChallengeMethods({
@@ -39,6 +40,15 @@ export function createLoginChallengeMethods({
   resolveOpenAiAccountPassword = defaultResolveOpenAiAccountPassword,
 } = {}) {
   return {
+    authResponseResult(payload, redirectUrl = '') {
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw validationError('AUTH_CONTINUATION_FAILED');
+      this.authResponseWorkspaces = readAuthWorkspacePayload(payload);
+      const pageType = String(payload?.page?.type || '');
+      const next = redirectUrl || payload.continue_url
+        || (pageType === 'external_url' ? payload.page?.payload?.url : '');
+      return { continueUrl: normalizeAuthContinueUrl(next), pageType, payload };
+    },
+
     prepareLoginUrl(prompt = 'login', { useLoginHint = true } = {}) {
       const pkce = generateOpenAIPkce();
       this.state = pkce.state;
@@ -155,6 +165,8 @@ export function createLoginChallengeMethods({
     async startOAuthSession({ useLoginHint = true, prompt = 'login' } = {}) {
       await this.ensureProxyConnectivity();
       const oauthUrl = this.prepareLoginUrl(prompt, { useLoginHint });
+      this.authContinuation = { phase: 'codex', url: oauthUrl, recoveryAttempted: false };
+      this.authResponseWorkspaces = null;
       const { url: landedUrl } = await openOAuthPage(this.fetch, oauthUrl, {
         callbackUrl: OPENAI_CODEX_REDIRECT_URI,
         headers: this.browserHeaders({
@@ -205,11 +217,7 @@ export function createLoginChallengeMethods({
         const preview = String(raw || '').trim().slice(0, 200);
         throw new Error(`AuthorizeContinue响应不是JSON: ${preview || (error instanceof Error ? error.message : String(error))}`);
       }
-      return {
-        continueUrl: normalizeAuthContinueUrl(payload.continue_url),
-        pageType: String(payload?.page?.type || ''),
-        payload,
-      };
+      return this.authResponseResult(payload);
     },
 
     async passwordVerify() {
@@ -231,11 +239,7 @@ export function createLoginChallengeMethods({
       });
       if (!response.ok) throw new Error(`PasswordVerify请求失败: ${await this.formatErrorResponse(response)}`);
       const payload = await response.json();
-      const result = {
-        continueUrl: normalizeAuthContinueUrl(payload.continue_url),
-        pageType: String(payload?.page?.type || ''),
-        payload,
-      };
+      const result = this.authResponseResult(payload);
       if (this.isEmailCodeChallenge(result)) throw validationError('EMAIL_VERIFICATION_REQUIRED');
       this.assertSupportedAuthStep(result);
       // Some valid MFA responses carry the factor only in the JSON payload.
@@ -283,18 +287,19 @@ export function createLoginChallengeMethods({
       this.totpSubmitted = true;
       const response = await this.fetch(AUTH_MFA_VERIFY_URL, {
         method: 'POST',
+        redirect: 'manual',
         headers,
         body: JSON.stringify({ type: 'totp', id: factorId, code }),
       });
+      const location = response.headers.get('location');
+      if ([301, 302, 303, 307, 308].includes(response.status) && location) {
+        return this.authResponseResult({}, new URL(location, AUTH_MFA_VERIFY_URL).toString());
+      }
       if (!response.ok) {
         throw new Error(`MFAVerify请求失败: ${await this.formatErrorResponse(response)}`);
       }
-      const payload = await response.json().catch(() => ({}));
-      const result = {
-        continueUrl: normalizeAuthContinueUrl(payload.continue_url || `${AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`),
-        pageType: String(payload?.page?.type || ''),
-        payload,
-      };
+      const payload = await response.json().catch(() => { throw validationError('AUTH_CONTINUATION_FAILED'); });
+      const result = this.authResponseResult(payload);
       if (this.isEmailCodeChallenge(result)) throw validationError('EMAIL_VERIFICATION_REQUIRED');
       return result;
     },

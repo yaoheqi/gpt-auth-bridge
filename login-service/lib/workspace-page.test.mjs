@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readWorkspacePagePayload } from './workspace-page.js';
+import { readWorkspacePagePayload, readAuthWorkspacePayload } from './workspace-page.js';
 
 // Same reference-table structure observed in the consent page; synthetic data.
 const table = [
@@ -11,6 +11,17 @@ const table = [
 ];
 const expected = { workspaces: [{ id: 'business-id', kind: 'organization' }, { id: 'personal-id', kind: 'personal' }] };
 const streamScript = text => `<script nonce="fixture">window.__reactRouterContext.streamController.enqueue(${JSON.stringify(text)});</script>`;
+
+test('auth response catalogs retain only workspace identities and reject malformed or contradictory data', () => {
+  const payload = { 'oai-client-auth-session': { email: 'private@example.com', workspaces: [
+    { id: 'personal-id', kind: 'personal', name: 'private name' },
+  ] } };
+  assert.deepEqual(readAuthWorkspacePayload(payload), { workspaces: [{ id: 'personal-id', kind: 'personal' }] });
+  assert.equal(readAuthWorkspacePayload({ 'oai-client-auth-session': { email: 'private@example.com' } }), null);
+  assert.deepEqual(readAuthWorkspacePayload({ 'oai-client-auth-session': { workspaces: [] } }), { workspaces: [] });
+  assert.throws(() => readAuthWorkspacePayload({ 'oai-client-auth-session': { workspaces: [{ id: 'missing-kind' }] } }), { code: 'WORKSPACE_PAGE_INVALID' });
+  assert.throws(() => readAuthWorkspacePayload({ ...payload, page: { payload: { workspaces: [] } } }), { code: 'WORKSPACE_PAGE_INVALID' });
+});
 
 test('reads consent loader workspaces without evaluating scripts or retaining private fields', () => {
   const html = '<script>throw new Error("must not run")</script>' + streamScript(JSON.stringify(table) + '\n');

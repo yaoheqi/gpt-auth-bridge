@@ -11,6 +11,7 @@ import {
 import { isAgentIdentityRecord as defaultIsAgentIdentityRecord } from '../../../../lib/openai-agent-identity.js';
 import { normalizeOpenAIAuthRecord as defaultNormalizeOpenAIAuthRecord } from '../auth-records.js';
 import { openOAuthPage as defaultOpenOAuthPage } from '../../../../lib/oauth-navigation.js';
+import { validationError, validationFailureFields } from '../../../../lib/validation-error.js';
 
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
 export function createOAuthNavigationMethods({
@@ -70,7 +71,7 @@ export function createOAuthNavigationMethods({
     },
 
     isChatGptUrl(url) {
-      return String(url || '').includes('chatgpt.com');
+      try { return new URL(url).origin === 'https://chatgpt.com'; } catch { return false; }
     },
 
     isOAuthTransitionUrl(url) {
@@ -81,6 +82,39 @@ export function createOAuthNavigationMethods({
       } catch { return false; }
     },
 
+    async resumeVerifiedOAuth(phase) {
+      const context = this.authContinuation;
+      if (!context || context.phase !== phase || context.recoveryAttempted || !this.isOAuthTransitionUrl(context.url)) {
+        throw validationError('AUTH_CONTINUATION_FAILED');
+      }
+      context.recoveryAttempted = true;
+      const authorize = new URL(context.url);
+      // Password/MFA already ran. Preserve client, state, nonce, redirect URI
+      // and PKCE; do not force a second credential prompt on the same session.
+      authorize.searchParams.delete('prompt');
+      const callbackUrl = phase === 'chatgpt' ? CHATGPT_AUTH_CALLBACK_OPENAI_URL : OPENAI_CODEX_REDIRECT_URI;
+      this.log('账号验证后缺少授权信息，保留当前会话续接 OAuth（仅一次）', 'warn');
+      let url;
+      try {
+        ({ url } = await openOAuthPage((address, init) => {
+          if (new URL(address).origin !== AUTH_BASE_URL) throw validationError('AUTH_CONTINUATION_FAILED');
+          return this.fetch(address, init);
+        }, authorize.toString(), { callbackUrl,
+          headers: this.browserHeaders({ accept: 'text/html,application/xhtml+xml,*/*' }) }));
+      } catch (error) {
+        if (error.name === 'AbortError' || validationFailureFields(error).validationFailure) throw error;
+        throw validationError('AUTH_CONTINUATION_FAILED', {
+          ...(error.status ? { reason: 'HTTP_ERROR', httpStatus: error.status } : {}),
+        }, error);
+      }
+      const landed = new URL(url), callback = new URL(callbackUrl);
+      if (!(landed.origin === callback.origin && landed.pathname === callback.pathname)
+        && !(landed.origin === AUTH_BASE_URL && this.isConsentUrl(url))) {
+        throw validationError('AUTH_CONTINUATION_FAILED');
+      }
+      return url;
+    },
+
     async advanceAuthStep(continueURL, { phase = 'codex' } = {}) {
       let url = continueURL;
       let workspaceSessionRecoveryAttempted = false;
@@ -88,6 +122,12 @@ export function createOAuthNavigationMethods({
       const chatgptLike = phase === 'chatgpt';
       if (!this.requireStoredSession) this.assertPasswordTotpCredentials();
       for (let step = 0; step < 14; step += 1) {
+        if (!url && credentialAuthCompleted) url = await this.resumeVerifiedOAuth(phase);
+        if (credentialAuthCompleted && this.authContinuation?.recoveryAttempted
+          && (['/log-in', '/log-in/password'].includes(this.pathOf(url))
+            || this.isEmailCodeChallenge({ continueUrl: url }) || this.isMfaChallenge({ continueUrl: url }))) {
+          throw validationError('AUTH_CONTINUATION_FAILED');
+        }
         url = (await this.preferPasswordLoginStep({ continueUrl: url })).continueUrl;
         this.assertSupportedAuthStep({ continueUrl: url });
         await this.humanPause(step === 0 ? 'think' : 'navigate');
@@ -193,13 +233,15 @@ export function createOAuthNavigationMethods({
         if (this.isConsentUrl(url)) {
           this.log(this.workspaceSelection.mode === 'id' ? '选择指定 Business 工作区' : '选择默认工作区');
           try {
-            url = await this.selectWorkspace(url);
+            url = await this.selectWorkspace(url, { phase });
           } catch (error) {
             const missingWorkspaceSession = ['WORKSPACE_SESSION_MISSING', 'WORKSPACE_SESSION_INVALID'].includes(error?.code);
             if (missingWorkspaceSession && credentialAuthCompleted) {
-              throw Object.assign(new Error('已完成账号验证，但授权页和 Cookie 均未返回可用工作区列表；已停止，不再重复提交密码/TOTP'), {
-                code: 'WORKSPACE_DISCOVERY_FAILED',
-              });
+              if (this.authContinuation?.phase === phase && !this.authContinuation.recoveryAttempted) {
+                url = await this.resumeVerifiedOAuth(phase);
+                continue;
+              }
+              throw validationError('WORKSPACE_DISCOVERY_FAILED');
             }
             if (!missingWorkspaceSession || !['codex', 'chatgpt'].includes(phase) || !this.isPasswordTotpAccount() || workspaceSessionRecoveryAttempted) throw error;
             workspaceSessionRecoveryAttempted = true;

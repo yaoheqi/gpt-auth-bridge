@@ -1,6 +1,7 @@
 import {
   AUTH_BASE_URL as defaultAUTH_BASE_URL,
   AUTH_WORKSPACE_SELECT_URL as defaultAUTH_WORKSPACE_SELECT_URL,
+  CHATGPT_AUTH_CALLBACK_OPENAI_URL as defaultCHATGPT_AUTH_CALLBACK_OPENAI_URL,
   normalizeAuthContinueUrl as defaultNormalizeAuthContinueUrl,
 } from '../../../../lib/openai-auth-urls.js';
 import { OPENAI_CODEX_REDIRECT_URI as defaultOPENAI_CODEX_REDIRECT_URI } from '../../../../lib/openai-oauth.js';
@@ -17,6 +18,7 @@ import { registerOpenAIAgentIdentity as defaultRegisterOpenAIAgentIdentity } fro
 export function createWorkspaceMethods({
   AUTH_BASE_URL = defaultAUTH_BASE_URL,
   AUTH_WORKSPACE_SELECT_URL = defaultAUTH_WORKSPACE_SELECT_URL,
+  CHATGPT_AUTH_CALLBACK_OPENAI_URL = defaultCHATGPT_AUTH_CALLBACK_OPENAI_URL,
   OPENAI_CODEX_REDIRECT_URI = defaultOPENAI_CODEX_REDIRECT_URI,
   firstNonEmpty = defaultFirstNonEmpty,
   normalizeAuthContinueUrl = defaultNormalizeAuthContinueUrl,
@@ -46,6 +48,11 @@ export function createWorkspaceMethods({
         this.log(`已从授权页读取 ${pagePayload.workspaces.length} 个工作区`);
         return resolveWorkspaceSelection(pagePayload, this.workspaceSelection);
       }
+      if (this.authResponseWorkspaces) {
+        this.discoveredWorkspaces = this.authResponseWorkspaces.workspaces;
+        this.log(`已从当前认证响应读取 ${this.discoveredWorkspaces.length} 个工作区`);
+        return resolveWorkspaceSelection(this.authResponseWorkspaces, this.workspaceSelection);
+      }
       // Do not maintain a fixed list of OpenAI hosts here. The auth service has
       // used auth.openai.com, child.auth.openai.com and other subdomains over
       // time, and the cookie may be scoped to a non-root consent/API path. A
@@ -58,19 +65,22 @@ export function createWorkspaceMethods({
         this.discoveredWorkspaces = payload.workspaces;
         return resolveWorkspaceSelection(payload, this.workspaceSelection);
       } catch (error) {
-        const details = cookies
+        const related = cookies.filter(cookie => /^oai-client-auth-session(?:\.|$)/.test(cookie.name || cookie.key));
+        const minimized = cookies.some(cookie => (cookie.name || cookie.key) === 'auth-session-minimized');
+        const details = related
           .map(cookie => `${cookie.name || cookie.key} [domain=${cookie.domain || '(host)'} path=${cookie.path || '/'}]`)
           .filter(Boolean)
           .slice(0, 40)
           .join(', ');
-        this.log(`工作区 Cookie 诊断: count=${cookies.length}${details ? `; ${details}` : '; none'}`, 'warn');
+        this.log(`工作区 Cookie 诊断: count=${cookies.length}; authSession=${related.length}; minimized=${minimized}${details ? `; ${details}` : ''}`, 'warn');
         throw error;
       }
     },
 
-    async selectWorkspace(consentURL) {
+    async selectWorkspace(consentURL, { phase = 'codex' } = {}) {
+      const callbackUrl = phase === 'chatgpt' ? CHATGPT_AUTH_CALLBACK_OPENAI_URL : OPENAI_CODEX_REDIRECT_URI;
       const { url: landedUrl, response: consentResponse } = await openOAuthPage(this.fetch, consentURL, {
-        callbackUrl: OPENAI_CODEX_REDIRECT_URI,
+        callbackUrl,
         headers: this.browserHeaders({
           accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           referer: consentURL,
@@ -79,7 +89,8 @@ export function createWorkspaceMethods({
       // Consent can redirect to a callback, phone challenge or renewed login.
       // Let the state machine process the actual step before demanding a cookie.
       if (!this.isConsentUrl(landedUrl)) {
-        if (!landedUrl.startsWith(OPENAI_CODEX_REDIRECT_URI) && !this.isAuthStartUrl(landedUrl)) {
+        const landed = new URL(landedUrl), callback = new URL(callbackUrl);
+        if (!(landed.origin === callback.origin && landed.pathname === callback.pathname) && !this.isAuthStartUrl(landedUrl)) {
           throw new Error(`工作区授权跳转到未知路径: ${this.pathOf(landedUrl)}`);
         }
         this.log(`工作区授权跳转到: ${this.pathOf(landedUrl)}`);

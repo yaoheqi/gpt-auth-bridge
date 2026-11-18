@@ -14,6 +14,8 @@ export const VALIDATION_FAILURES = Object.freeze({
   VALIDATION_CHALLENGE_FAILED: '辅助验证未完成，请稍后重试或人工处理',
   VALIDATION_CONTEXT_MISMATCH: '验证结果与当前登录上下文不一致，已拒绝继续提交',
   EMAIL_VERIFICATION_REQUIRED: '上游仍要求邮箱验证，无法继续密码登录；已停止自动重试，请在官方页面完成验证后再试',
+  AUTH_CONTINUATION_FAILED: '身份验证后的 OAuth 授权未完成，已停止重复提交密码和 2FA；请稍后重试或在官方页面核查登录状态',
+  WORKSPACE_DISCOVERY_FAILED: '账号验证已完成，但当前认证响应、授权页和 Cookie 均未提供可用工作区列表；已停止重复提交密码和 2FA',
 });
 const stages = new Set(['sentinel', 'requirements', 'provider', 'browser_queue', 'browser_start',
   'browser_context', 'browser_navigation', 'browser_verify', 'browser_cleanup']);
@@ -67,6 +69,8 @@ export function validationFailureLabel(input) {
   if (!failure) return '';
   if (isValidationAccessBlocked(failure)) return failure.httpStatus === 429 ? '上游请求限流' : '上游访问受限';
   if (failure.code === 'EMAIL_VERIFICATION_REQUIRED') return '需要邮箱验证';
+  if (failure.code === 'AUTH_CONTINUATION_FAILED') return '登录授权未完成';
+  if (failure.code === 'WORKSPACE_DISCOVERY_FAILED') return '工作区授权失败';
   if (failure.code === 'VALIDATION_TIMEOUT') return '辅助验证超时';
   if (failure.code === 'VALIDATION_CANCELLED') return '辅助验证已取消';
   return '辅助验证失败';

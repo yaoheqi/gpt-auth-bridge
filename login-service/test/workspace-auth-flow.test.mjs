@@ -596,6 +596,83 @@ test('fresh password and TOTP login with no workspace data stops instead of repe
   assert.deepEqual(events, ['password', 'totp']);
 });
 
+test('MFA follows the returned external URL or redirect and never invents Codex consent', async () => {
+  const webCallback = 'https://chatgpt.com/api/auth/callback/openai?code=fixture&state=original';
+  for (const variant of ['page-url', 'redirect', 'invalid-json', 'empty']) {
+    const flow = flowWithTransport(async url => url === authUrls.AUTH_MFA_VERIFY_URL
+      ? response(url, variant === 'redirect' ? { status: 302, headers: { location: webCallback } }
+        : { body: variant === 'invalid-json' ? '<html>error</html>' : JSON.stringify(variant === 'empty' ? {} : {
+          page: { type: 'external_url', payload: { url: webCallback } },
+        }) }) : response(url));
+    flow.fetchSentinelToken = async () => 'fixture';
+    const result = flow.mfaValidate({ continueUrl: authUrls.AUTH_BASE_URL + '/mfa-challenge/fixture' });
+    if (variant === 'invalid-json') await assert.rejects(result, { code: 'AUTH_CONTINUATION_FAILED' });
+    else assert.equal((await result).continueUrl, variant === 'empty' ? '' : webCallback);
+  }
+});
+
+test('workspace catalog from current auth response works with minimized cookies and keeps page precedence', async () => {
+  const flow = flowWithTransport(async url => response(url, { body: JSON.stringify({ continue_url: '/workspace',
+    'oai-client-auth-session': { email: 'private@example.com', workspaces: PAYLOAD.workspaces },
+  }) }));
+  flow.fetchSentinelToken = async () => 'fixture';
+  await flow.jar.setCookie('auth-session-minimized=opaque; Path=/; Secure', authUrls.AUTH_BASE_URL);
+  await flow.mfaValidate({ continueUrl: authUrls.AUTH_BASE_URL + '/mfa-challenge/factor' });
+  flow.workspaceSelection = { mode: 'id', workspaceId: 'business-id' };
+  assert.equal(await flow.resolveWorkspaceID('<html>minimal consent shell</html>'), 'business-id');
+  assert.doesNotMatch(JSON.stringify(flow.authResponseWorkspaces), /email|private|opaque/);
+  await assert.rejects(flow.resolveWorkspaceID(`<script type="application/json">${JSON.stringify({ workspaces: [PAYLOAD.workspaces[0]] })}</script>`),
+    { code: 'BUSINESS_NOT_MEMBER' });
+});
+
+test('Web workspace redirect returns its original callback before consuming its authorization code', async () => {
+  const webCallback = 'https://chatgpt.com/api/auth/callback/openai?code=fixture&state=original';
+  const calls = [];
+  const flow = flowWithTransport(async url => {
+    calls.push(url);
+    assert.equal(url, CONSENT);
+    return response(url, { status: 302, headers: { location: webCallback } });
+  });
+  assert.equal(await flow.selectWorkspace(CONSENT, { phase: 'chatgpt' }), webCallback);
+  assert.deepEqual(calls, [CONSENT]);
+});
+
+test('verified login resumes its original OAuth once when a workspace shell has no catalog', async () => {
+  for (const phase of ['chatgpt', 'codex']) {
+    for (const landing of ['callback', 'credentials', 'empty-consent', 'consent-login', 'blocked']) {
+      let resumes = 0, passwords = 0, totps = 0;
+      const callback = phase === 'chatgpt' ? 'https://chatgpt.com/api/auth/callback/openai?code=fixture&state=original' : CALLBACK;
+      const original = `${authUrls.AUTH_BASE_URL}/oauth/authorize?client_id=original-client&state=original&nonce=original-nonce&code_challenge=original-challenge&prompt=login`;
+      const flow = flowWithTransport(async (url, init) => {
+        assert.match(init.headers.cookie, /verified=original/);
+        if (new URL(url).pathname === '/oauth/authorize') {
+          resumes++;
+          const query = new URL(url).searchParams;
+          for (const [key, value] of new URL(original).searchParams) if (key !== 'prompt') assert.equal(query.get(key), value);
+          assert.equal(query.has('prompt'), false);
+          if (landing === 'blocked') return response(url, { status: 403, body: 'private upstream body' });
+          return response(url, { status: 302, headers: { location: landing === 'callback' ? callback : landing === 'credentials' ? '/log-in/password' : CONSENT } });
+        }
+        if (resumes && landing === 'consent-login' && url === CONSENT) {
+          return response(url, { status: 302, headers: { location: '/log-in/password' } });
+        }
+        return response(url);
+      });
+      flow.authContinuation = { phase, url: original, recoveryAttempted: false };
+      await flow.jar.setCookie('verified=original; Path=/; Secure', authUrls.AUTH_BASE_URL);
+      flow.passwordVerify = async () => { passwords++; return { continueUrl: '/mfa-challenge/factor', pageType: 'mfa' }; };
+      flow.mfaValidate = async () => { totps++; return { continueUrl: CONSENT }; };
+      flow.resetAuthSession = () => assert.fail('must retain verified state');
+      const result = flow.advanceAuthStep(`${authUrls.AUTH_BASE_URL}/log-in/password`, { phase });
+      if (landing === 'callback') assert.equal(await result, callback);
+      else await assert.rejects(result, { code: landing === 'empty-consent' ? 'WORKSPACE_DISCOVERY_FAILED' : 'AUTH_CONTINUATION_FAILED' });
+      assert.equal(resumes, 1);
+      assert.equal(passwords, 1);
+      assert.equal(totps, 1);
+    }
+  }
+});
+
 test('current consent catalog takes precedence over stale cookie membership', async () => {
   const flow = flowWithTransport();
   await flow.jar.setCookie(`oai-client-auth-session=${COOKIE_VALUE}; Path=/; Secure`, authUrls.AUTH_BASE_URL);
@@ -607,8 +684,13 @@ test('current consent catalog takes precedence over stale cookie membership', as
 for (const repairCookie of [true, false]) {
   test(`missing stored workspace session triggers one password/TOTP recovery (cookie restored: ${repairCookie})`, async () => {
     const events = [];
+    let authorizations = 0;
     const transport = async (url, init) => {
       if (new URL(url).pathname === '/oauth/authorize') {
+        if (authorizations++) {
+          assert.equal(new URL(url).searchParams.has('prompt'), false);
+          return response(url, { status: 302, headers: { location: CONSENT } });
+        }
         assert.equal(new URL(url).searchParams.get('prompt'), 'login');
         return response(url, { status: 302, headers: { location: '/log-in/password', 'set-cookie': 'oai-did=test-device; Path=/; Secure' } });
       }
@@ -641,6 +723,7 @@ for (const repairCookie of [true, false]) {
     if (repairCookie) assert.equal(await flow.advanceAuthStep(CONSENT), CALLBACK);
     else await assert.rejects(flow.advanceAuthStep(CONSENT), error => error.code === 'WORKSPACE_DISCOVERY_FAILED');
     assert.deepEqual(events, ['reset', 'password', 'totp']);
+    assert.equal(authorizations, repairCookie ? 1 : 2);
     assert.equal(await flow.readCookie(authUrls.AUTH_BASE_URL, 'stale'), '');
     assert.equal(flow.forbidPhoneChallenge, true);
     assert.equal(flow.workspaceSelection.workspaceId, 'business-id');

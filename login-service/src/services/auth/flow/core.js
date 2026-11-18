@@ -105,6 +105,8 @@ export function createCoreMethods({
       this.mfaContinueUrl = '';
       this.mfaPayload = null;
       this.discoveredWorkspaces = null;
+      this.authContinuation = null;
+      this.authResponseWorkspaces = null;
     },
 
     async formatErrorResponse(response) {

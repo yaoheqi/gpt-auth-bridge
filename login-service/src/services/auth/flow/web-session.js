@@ -126,6 +126,8 @@ export function createWebSessionMethods({
       }
 
       this.log('ChatGPT Web：进入 OpenAI OAuth');
+      this.authContinuation = { phase: 'chatgpt', url: signInUrl, recoveryAttempted: false };
+      this.authResponseWorkspaces = null;
       await this.humanPause('navigate');
       const oauthResp = await this.fetch(signInUrl, {
         redirect: 'follow',

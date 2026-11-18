@@ -18,6 +18,18 @@ function normalizeCatalog(value) {
   return { workspaces: [...workspaces.values()] };
 }
 
+// New auth responses carry the session in JSON while cookies contain only a
+// minimized, opaque session. Keep just the current workspace IDs and kinds.
+export function readAuthWorkspacePayload(payload) {
+  const catalogs = [payload?.['oai-client-auth-session'], payload?.page?.payload]
+    .filter(value => value && Object.hasOwn(value, 'workspaces'))
+    .map(value => normalizeCatalog(value.workspaces));
+  if (!catalogs.length) return null;
+  const signature = catalog => JSON.stringify(catalog.workspaces.map(item => [item.id, item.kind]).sort());
+  if (catalogs.some(catalog => signature(catalog) !== signature(catalogs[0]))) throw invalidWorkspacePage();
+  return catalogs[0];
+}
+
 // React Router serializes loader data as a table of references. Read only
 // workspace IDs/types; never evaluate page JavaScript or retain user metadata.
 function readStreamCatalogs(table) {
