@@ -209,7 +209,7 @@ def main():
                 page.locator('#evaluation-pause').click()
                 expect(page.locator('#evaluation-progress-count')).to_have_text('1 / 2')
                 assert page.locator('#evaluation-chars').inner_text() != '0 字符'
-                output = ROOT / 'output' / 'model-evaluation-focused'
+                output = Path(os.environ.get('EVALUATION_SCREENSHOT_DIR', str(ROOT / 'output' / 'model-evaluation-focused')))
                 output.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(output / 'streaming-desktop.png'), full_page=True)
                 page.locator('.top-nav [data-format="sub2api"]').click()
