@@ -1995,6 +1995,8 @@ body.is-model-evaluation { background: #f5f7f8; }
 #evaluation-fields label { display: grid; gap: 7px; color: var(--text); font-size: 12px; font-weight: 600; }
 #evaluation-fields input:not([type=radio]), #evaluation-fields select { min-width: 0; width: 100%; border: 1px solid var(--line-strong); border-radius: 6px; background: white; color: var(--text); padding: 10px 11px; font-size: 13px; }
 #evaluation-fields input:focus-visible, #evaluation-fields select:focus-visible { outline: 2px solid var(--eval-blue); outline-offset: 2px; }
+.evaluation-reasoning-control { display: grid; gap: 7px; margin-top: 14px; }
+.evaluation-reasoning-control > small { color: var(--muted); font-size: 11px; line-height: 1.5; }
 .evaluation-mode { display: flex; background: var(--surface-soft); padding: 3px; border-radius: 7px; }
 #evaluation-fields .evaluation-mode label { flex: 1; position: relative; text-align: center; cursor: pointer; }
 .evaluation-mode input { position: absolute; opacity: 0; }

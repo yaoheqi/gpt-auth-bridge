@@ -15,7 +15,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   const find = id => panel.querySelector(`#evaluation-${id}`);
   const start = panel.querySelector('[data-evaluation-start]'), stop = panel.querySelector('[data-evaluation-stop]');
   const results = panel.querySelector('[data-evaluation-results]');
-  const status = find('status'), model = find('model'), fields = find('fields');
+  const status = find('status'), model = find('model'), reasoning = find('reasoning-effort'), fields = find('fields');
   const frame = find('preview-frame'), dialog = find('preview-dialog'), largeFrame = find('large-frame');
   let controller, timer, generation = 0, jobs = [], selected = -1;
   let lastPreview = '', lastPreviewAt = 0, previewTimer, previewJob = null;
@@ -120,7 +120,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   function renderSelected(force = false) {
     const job = currentJob();
     find('case-title').textContent = job ? TITLES[job.question] : '鹈鹕骑自行车';
-    find('case-target').textContent = job ? `${job.label} · ${job.model}` : '生成内容将在这里逐步呈现';
+    find('case-target').textContent = job ? `${job.label} · ${job.model} · 思考：${job.reasoningLabel}` : '生成内容将在这里逐步呈现';
     find('case-status').textContent = job ? STATUS[job.status] : '等待开始';
     find('case-status').dataset.state = job?.status || '';
     const phaseIndex = job ? (ACTIVE.includes(job.status) ? ACTIVE.indexOf(job.status) : ['cancelled', 'error'].includes(job.status) ? -1 : 4) : -1;
@@ -300,6 +300,9 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     if (!Number.isInteger(concurrency) || concurrency < 1) { status.textContent = '服务端并发配置尚未加载，请刷新页面后重试。'; return; }
     const questions = find('include-pelican').checked ? ['candy', 'pelican'] : ['candy'];
     const chosenModel = model.value.trim();
+    const reasoningEffort = reasoning.value;
+    const reasoningLabel = reasoning.selectedOptions[0]?.textContent || '模型默认';
+    if (!reasoningEffort) { status.textContent = '请选择有效的思考程度。'; return; }
     if (!/^[a-zA-Z0-9._-]{1,100}$/.test(chosenModel)) { status.textContent = '请选择或输入有效模型名称。'; return; }
     const apiMode = mode() === 'api';
     const api = apiMode ? { baseUrl: find('api-url').value.trim(), key: find('api-key').value.trim(), protocol: find('protocol').value } : null;
@@ -324,7 +327,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
       const stateLabel = document.createElement('span'); stateLabel.className = 'evaluation-task-status'; stateLabel.textContent = '排队中';
       button.append(title, target, stateLabel); results.append(button);
       return { account, credentialKey: account ? healthCredentialKey(account) : '', owner: evaluationAccountOwner(account), question, label,
-        model: chosenModel, status: 'queued', output: '', firstTokenMs: null, button, stateLabel };
+        model: chosenModel, reasoningEffort, reasoningLabel, status: 'queued', output: '', firstTokenMs: null, button, stateLabel };
     }));
     find('task-select').replaceChildren(); find('task-select').hidden = false;
     jobs.forEach((job, index) => {
@@ -344,7 +347,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
           try {
             const response = await request('/api/model-evaluation', { method: 'POST', credentials: 'same-origin', signal: current.signal,
               headers: getHeaders({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
-              body: JSON.stringify({ ...(apiMode ? { api } : { account: job.account }), model: chosenModel, question: job.question }) });
+              body: JSON.stringify({ ...(apiMode ? { api } : { account: job.account }), model: chosenModel, reasoningEffort: job.reasoningEffort, question: job.question }) });
             if (!response.ok) {
               const error = await response.json().catch(() => ({}));
               throw new Error(typeof error.error === 'string' ? error.error : `HTTP ${response.status}`);

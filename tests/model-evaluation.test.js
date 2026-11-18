@@ -7,6 +7,44 @@ const account = { accessToken: 'fixture-token', accountId: 'workspace-one' };
 const completed = output => ({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: output }] }] });
 const sse = events => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
 
+test('selected reasoning effort reaches account, Responses and Chat requests and results', async () => {
+  for (const source of ['account', 'responses', 'chat']) {
+    for (const reasoningEffort of ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
+      const input = source === 'account' ? { account } : { api: { baseUrl: 'https://fixture.example/v1', key: 'fixture-key', protocol: source } };
+      const result = await evaluateModel({ ...input, question: 'candy', model: 'custom-model', reasoningEffort }, {
+        fetchImpl: async (_url, init) => {
+          const body = JSON.parse(init.body);
+          if (reasoningEffort === 'default') {
+            assert.equal(Object.hasOwn(body, 'reasoning'), false);
+            assert.equal(Object.hasOwn(body, 'reasoning_effort'), false);
+          } else if (source === 'chat') {
+            assert.equal(body.reasoning_effort, reasoningEffort);
+            assert.equal(Object.hasOwn(body, 'reasoning'), false);
+          } else {
+            assert.deepEqual(body.reasoning, { effort: reasoningEffort });
+            assert.equal(Object.hasOwn(body, 'reasoning_effort'), false);
+          }
+          return Response.json(source === 'chat'
+            ? { choices: [{ finish_reason: 'stop', message: { content: '答案：21' } }] }
+            : completed('答案：21'));
+        },
+      });
+      assert.equal(result.status, 'passed');
+      assert.equal(result.reasoningEffort, reasoningEffort);
+    }
+  }
+});
+
+test('reasoning effort validates before requesting upstream and omitted values preserve prior protocol defaults', async () => {
+  for (const reasoningEffort of ['', null, 3, {}, ['high'], 'HIGH', '__proto__', 'high\n']) {
+    await assert.rejects(evaluateModel({ account, question: 'candy', reasoningEffort }, {
+      fetchImpl: () => assert.fail('invalid reasoning effort must not reach upstream'),
+    }), { statusCode: 400 });
+  }
+  assert.equal(validateEvaluation({ account, question: 'candy' }).reasoningEffort, 'medium');
+  assert.equal(validateEvaluation({ api: { baseUrl: 'https://fixture.example', key: 'fixture', protocol: 'chat' }, question: 'candy' }).reasoningEffort, 'default');
+});
+
 test('evaluation forwards chosen model and workspace to the fixed endpoint', async () => {
   for (const model of ['gpt-6-astra', 'custom-model']) {
     const result = await evaluateModel({ account, question: 'candy', model }, { fetchImpl: async (url, init) => {

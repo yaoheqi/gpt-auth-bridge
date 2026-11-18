@@ -124,6 +124,8 @@ def main():
                 expect(page.locator('.top-nav [data-format="sub2api"]')).to_have_attribute('aria-pressed', 'false')
                 expect(start).to_be_disabled()
                 expect(page.locator('#evaluation-model')).to_have_value('gpt-6-astra')
+                expect(page.locator('#evaluation-reasoning-effort')).to_have_value('medium')
+                page.locator('#evaluation-reasoning-effort').select_option('high')
                 page.locator('#evaluation-import').click()
                 accounts = [{'accessToken': 'fixture-token', 'user': {'email': email}} for email in ['first@example.com', 'failed@example.com', 'third@example.com']]
                 # Fresh usage overrides stale imported plans; fallback to Session, CPA and JWT plans.
@@ -148,6 +150,8 @@ def main():
                 assert len(requests) == 2
                 assert {body['account']['email'] for body in requests} == {'first@example.com', 'third@example.com'}
                 assert all(body['question'] == 'candy' for body in requests)
+                assert all(body['reasoningEffort'] == 'high' for body in requests)
+                expect(page.locator('#evaluation-case-target')).to_contain_text('思考：高（high）')
                 expect(page.locator('#evaluation-case-title')).to_have_text('糖果题')
                 requests.clear()
                 page.locator('#evaluation-include-pelican').check()
@@ -155,6 +159,7 @@ def main():
                 expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
                 assert len(requests) == 4
                 assert all(body['model'] == 'gpt-6-astra' and body['account']['email'] in ['first@example.com', 'third@example.com'] for body in requests)
+                assert all(body['reasoningEffort'] == 'high' for body in requests)
                 expect(page.locator('#evaluation-status')).to_contain_text('失败 1')
                 expect(page.locator('#evaluation-progress-count')).to_have_text('4 / 4')
                 expect(page.frame_locator('#evaluation-preview-frame').locator('svg text')).to_have_text('Pelican in motion')
@@ -192,8 +197,10 @@ def main():
                 page.locator('#evaluation-api-key').fill('fixture-api-secret')
                 page.set_viewport_size({'width': 1366, 'height': 768})
                 page.locator('#evaluation-model').fill('custom-model')
+                page.locator('#evaluation-reasoning-effort').select_option('xhigh')
                 start.click()
                 expect(page.locator('#evaluation-case-status')).to_have_text('生成中')
+                expect(page.locator('#evaluation-reasoning-effort')).to_be_disabled()
                 expect(page.frame_locator('#evaluation-preview-frame').locator('svg text')).to_have_text('Pelican in motion')
                 assert not release.is_set()
                 area = page.locator('#evaluation-preview-surface').bounding_box()
@@ -214,6 +221,7 @@ def main():
                 expect(page.locator('#evaluation-tokens')).to_have_text('88')
                 assert page.frame_locator('#evaluation-preview-frame').locator('svg').evaluate('(svg) => svg.animationsPaused()')
                 assert all(item[1] == 'Bearer fixture-api-secret' and item[2]['model'] == 'custom-model' for item in upstream_requests)
+                assert all(item[2]['reasoning'] == {'effort': 'xhigh'} and 'reasoning_effort' not in item[2] for item in upstream_requests)
                 page.screenshot(path=str(output / 'completed-desktop.png'), full_page=True)
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
 
@@ -238,6 +246,7 @@ def main():
                 candy_answer = '21'
                 page.locator('#evaluation-include-pelican').check()
                 page.locator('#evaluation-protocol').select_option('chat')
+                page.locator('#evaluation-reasoning-effort').select_option('low')
                 release.clear()
                 start.click()
                 expect(page.locator('#evaluation-case-status')).to_have_text('生成中')
@@ -248,6 +257,8 @@ def main():
                 expect(page.locator('#evaluation-preview-frame')).to_be_visible()
                 expect(start).to_be_enabled()
                 assert upstream_requests[-1][0] == '/v1/chat/completions'
+                assert upstream_requests[-1][2]['reasoning_effort'] == 'low'
+                assert 'reasoning' not in upstream_requests[-1][2]
                 release.set()
                 page.set_viewport_size({'width': 390, 'height': 844})
                 expect(page.frame_locator('#evaluation-preview-frame').locator('svg text')).to_have_text('Pelican in motion')
@@ -260,6 +271,7 @@ def main():
                 page.locator('#model-evaluation-tab').click()
                 expect(panel).to_be_visible()
                 expect(page.locator('#evaluation-api-key')).to_have_value('')
+                expect(page.locator('#evaluation-reasoning-effort')).to_have_value('low')
                 page.locator('input[name="evaluation-source"][value="accounts"]').check()
                 expect(page.locator('#evaluation-account-count')).to_have_text('2 个可测试账号 / 6 个导入账号 · 已跳过 3 个 free 账号')
                 expect(start).to_be_enabled()

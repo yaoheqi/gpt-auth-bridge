@@ -136,6 +136,22 @@
                 </div>
                 <label for="evaluation-model">测试模型<input id="evaluation-model" list="evaluation-models" value="gpt-6-astra" maxlength="100" required spellcheck="false" /></label>
                 <datalist id="evaluation-models"><option value="gpt-6-astra"></option><option value="gpt-5.6-sol"></option><option value="gpt-5.6-terra"></option><option value="gpt-5.5"></option></datalist>
+                <div class="evaluation-reasoning-control">
+                  <label for="evaluation-reasoning-effort">思考程度
+                    <select id="evaluation-reasoning-effort" aria-describedby="evaluation-reasoning-hint">
+                      <option value="default">模型默认</option>
+                      <option value="none">不思考（none）</option>
+                      <option value="minimal">极少（minimal）</option>
+                      <option value="low">低（low）</option>
+                      <option value="medium" selected>中等（medium）</option>
+                      <option value="high">高（high）</option>
+                      <option value="xhigh">极高（xhigh）</option>
+                      <option value="max">最大（max）</option>
+                      <option value="ultra">超高（ultra）</option>
+                    </select>
+                  </label>
+                  <small id="evaluation-reasoning-hint">可用程度取决于模型与接口；选“模型默认”时由模型决定。</small>
+                </div>
                 <div class="evaluation-question-summary"><span>本轮测试</span><strong>糖果题 <small>默认必测 / 答案 21</small></strong><label class="evaluation-optional-question"><input id="evaluation-include-pelican" type="checkbox" data-private="true" />同时测试鹈鹕题 <small>SVG / 动画</small></label><small id="evaluation-concurrency">并发按服务端配置</small></div>
                 <button class="button button-primary" type="submit" data-evaluation-start disabled>开始测试</button>
               </fieldset>
