@@ -60,6 +60,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     } else {
       const hints = [];
       if (reasoning.value === 'ultra') hints.push('ultra 将按原值发送，仅适用于支持此扩展的 API 服务商。');
+      if (['xhigh', 'max', 'ultra'].includes(reasoning.value)) hints.push('首字可能需要较长时间，单题最多等待 20 分钟。');
       if (reasoning.value === 'default') hints.push('由模型选择思考程度。');
       if (!apiMode && !hints.length) hints.push(ACCOUNT_ULTRA_HINT);
       reasoningHint.textContent = hints.join('') || '可用档位取决于模型和 API 服务商。';
@@ -143,7 +144,8 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     });
     const output = find('output');
     const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 60;
-    const text = job?.output || (job && ACTIVE.includes(job.status) ? '等待模型输出…' : '模型输出将在这里逐步显示。');
+    const interrupted = ['cancelled', 'error'].includes(job?.status);
+    const text = job?.output || (interrupted ? '' : job ? '等待模型输出…' : '模型输出将在这里逐步显示。');
     output.classList.toggle('is-source', rawOutput || job?.question === 'pelican');
     if (rawOutput || job?.question === 'pelican') output.textContent = text;
     else output.innerHTML = markdown.render(text);
@@ -151,8 +153,8 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     if (follow) output.scrollTop = output.scrollHeight;
     find('case-error').hidden = !job?.error;
     find('case-error').textContent = job?.error || '';
-    find('output-note').textContent = ['cancelled', 'error'].includes(job?.status)
-      ? '已保留收到的部分内容；当前预览可能不完整。'
+    find('output-note').textContent = interrupted
+      ? (job.output ? '已保留收到的部分内容。' : '本次请求未收到正文。')
       : job?.question === 'candy' ? '糖果题沿用参考项目的摸馒头题。预期答案：21；以最后一行答案判分。'
         : job && ACTIVE.includes(job.status) ? '正在生成，画面约每 1.5 秒更新一次。未闭合的图形会随后续内容逐步补全。'
           : '鹈鹕题保留 CSS / SVG 动画，完成后由你评审画面质量。';
@@ -379,7 +381,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
               if (data.type === 'error') throw new Error(data.error || '模型请求失败');
               updateJob(job);
             });
-            if (!complete && active()) throw new Error('连接已结束，但模型未完成输出。已保留部分内容。');
+            if (!complete && active()) throw new Error('连接已结束，模型未完成输出。');
           } catch (error) {
             if (run !== generation || !ownsWorkspace()) return;
             job.status = current.signal.aborted ? 'cancelled' : 'error'; job.error = current.signal.aborted ? '' : error.message;

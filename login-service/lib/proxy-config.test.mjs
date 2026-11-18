@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { channel } from 'node:diagnostics_channel';
 import {
   FIXED_LOCAL_PROXY_URL,
   createProxiedFetch,
@@ -58,6 +61,39 @@ test('createProxiedFetch uses supplied URL or local fallback', async () => {
   assert.equal(empty.proxyUrl, FIXED_LOCAL_PROXY_URL);
   assert.equal(remote.proxyUrl, 'http://user:pass@remote.example:1080/');
   await Promise.all([empty.dispose(), remote.dispose()]);
+});
+
+test('model request transport applies the selected header and body limits on direct and proxied requests', async () => {
+  const local = createServer((_req, res) => res.end('ok'));
+  local.on('connect', (_req, socket) => {
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    socket.once('data', () => socket.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok'));
+  });
+  local.listen(0, '127.0.0.1');
+  await once(local, 'listening');
+  const url = `http://127.0.0.1:${local.address().port}`;
+  const requests = [];
+  const events = channel('undici:request:create');
+  const capture = ({ request }) => {
+    if (request.method === 'GET') requests.push([request.headersTimeout, request.bodyTimeout]);
+  };
+  events.subscribe(capture);
+  try {
+    for (const proxy of ['', url]) {
+      const transport = createProxiedFetch(proxy, { upstreamTimeoutMs: 1_200_000 });
+      try {
+        const response = await transport(proxy ? 'http://model.invalid/test' : url);
+        assert.equal(await response.text(), 'ok');
+      } finally {
+        await transport.dispose();
+      }
+    }
+    assert.deepEqual(requests, [[1_200_000, 1_200_000], [1_200_000, 1_200_000]]);
+  } finally {
+    events.unsubscribe(capture);
+    local.closeAllConnections();
+    await new Promise(resolve => local.close(resolve));
+  }
 });
 
 test('normalizes all supported proxy formats', () => {

@@ -1,4 +1,4 @@
-import { ProxyAgent, Socks5ProxyAgent, fetch as undiciFetch } from 'undici';
+import { ProxyAgent, Socks5ProxyAgent, fetch as undiciFetch, getGlobalDispatcher } from 'undici';
 import { createProxyRoute } from './proxy-route.js';
 
 export class ProxyConfigError extends Error {
@@ -114,12 +114,17 @@ function createProxyDispatcher(proxyUrl) {
  * Create a fetch function that routes through HTTP(S) or SOCKS proxy.
  * When proxyUrl is empty, returns global fetch.
  */
-export function createProxiedFetch(proxyUrl = '', { isolated: _isolated = false } = {}) {
+export function createProxiedFetch(proxyUrl = '', { isolated: _isolated = false, upstreamTimeoutMs } = {}) {
   // An empty URL means direct egress; callers that need a pool resolve it first.
   const url = normalizeProxyUrl(proxyUrl) || FIXED_LOCAL_PROXY_URL;
+  // Set per-request limits so both HTTP and SOCKS pools honor the evaluation deadline.
+  const withTimeout = dispatcher => upstreamTimeoutMs === undefined ? dispatcher : dispatcher.compose(
+    dispatch => (options, handler) => dispatch({ ...options, headersTimeout: upstreamTimeoutMs, bodyTimeout: upstreamTimeoutMs }, handler),
+  );
 
   if (!url) {
-    const direct = (input, init = {}) => undiciFetch(input, init);
+    const direct = (input, init = {}) => undiciFetch(input, upstreamTimeoutMs === undefined ? init
+      : { ...init, dispatcher: withTimeout(init.dispatcher || getGlobalDispatcher()) });
     direct.proxyAgent = null;
     direct.dispatcher = null;
     direct.proxyUrl = '';
@@ -149,7 +154,7 @@ export function createProxiedFetch(proxyUrl = '', { isolated: _isolated = false 
       if (disposed) { await route.close(); throw new Error('Proxy fetch disposed'); }
       dispatcher ||= createProxyDispatcher(route.url);
     }
-    return undiciFetch(input, { ...init, dispatcher });
+    return undiciFetch(input, { ...init, dispatcher: withTimeout(dispatcher) });
   };
   Object.defineProperty(proxied, 'proxyAgent', { get: () => dispatcher });
   Object.defineProperty(proxied, 'dispatcher', { get: () => dispatcher });

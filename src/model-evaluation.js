@@ -120,7 +120,8 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
   const { account, question, model, reasoningEffort, endpoint, key, protocol } = validateEvaluation(body);
   const started = Date.now();
   onEvent({ type: 'phase', phase: 'queued' });
-  const run = async fetchImpl => {
+  const upstreamTimeoutMs = ['xhigh', 'max', 'ultra'].includes(reasoningEffort) ? 20 * 60_000 : 150_000;
+  const requestModel = async (fetchImpl, requestSignal, progress) => {
     onEvent({ type: 'phase', phase: 'connecting' });
     const requestBody = protocol === 'chat'
       ? { model, stream: true, messages: [{ role: 'user', content: EVALUATION_QUESTIONS[question] }] }
@@ -132,7 +133,7 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
     }
     const response = await fetchImpl(endpoint, {
       method: 'POST', redirect: 'manual',
-      signal: AbortSignal.any([AbortSignal.timeout(150_000), signal].filter(Boolean)),
+      signal: requestSignal,
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'text/event-stream',
         ...(account?.accountId ? { 'ChatGPT-Account-Id': account.accountId } : {}) },
       body: JSON.stringify(requestBody),
@@ -143,6 +144,7 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
       } else await response.body?.cancel();
       throw new Error(`模型请求失败（HTTP ${response.status}）`);
     }
+    progress.stage = '已收到响应头，仍在等待首字';
     onEvent({ type: 'phase', phase: 'waiting' });
     let output = '', completed = false, firstTokenMs = null, usage = null;
     const append = delta => {
@@ -150,6 +152,7 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
       output += delta;
       if (output.length > 256 * 1024) throw new Error('模型输出过大');
       firstTokenMs ??= Date.now() - started;
+      progress.stage = '已收到部分正文，仍在等待模型完成';
       onEvent({ type: 'delta', delta, firstTokenMs, durationMs: Date.now() - started });
     };
     if (response.headers.get('content-type')?.includes('application/json')) {
@@ -191,9 +194,28 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
     return { model, reasoningEffort, question, output, ...gradeEvaluation(question, output), firstTokenMs,
       outputChars: output.length, outputTokens: usage?.output_tokens ?? usage?.completion_tokens ?? null, durationMs: Date.now() - started };
   };
+  const run = async transport => {
+    const progress = { stage: '仍在等待上游响应头' };
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), upstreamTimeoutMs);
+    timer.unref?.();
+    const requestSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    try {
+      requestSignal.throwIfAborted();
+      return await requestModel(transport, requestSignal, progress);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (deadline.signal.aborted || ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(error.cause?.code || error.code)) {
+        throw new Error(`模型请求超时（${upstreamTimeoutMs / 1000} 秒），${progress.stage}。`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   if (fetchImpl) return run(fetchImpl);
   return runAccountTask(async () => {
-    const transport = createProxiedFetch(resolveSessionProxy().proxyUrl);
+    const transport = createProxiedFetch(resolveSessionProxy().proxyUrl, { upstreamTimeoutMs });
     try { return await run(transport); }
     finally { await transport.dispose(); }
   }, { signal });
