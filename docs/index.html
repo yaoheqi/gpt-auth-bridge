@@ -147,10 +147,10 @@
                       <option value="high">高（high）</option>
                       <option value="xhigh">极高（xhigh）</option>
                       <option value="max">最大（max）</option>
-                      <option value="ultra">超高（ultra）</option>
+                      <option value="ultra" disabled>ultra（API 扩展）</option>
                     </select>
                   </label>
-                  <small id="evaluation-reasoning-hint">可用程度取决于模型与接口；选“模型默认”时由模型决定。</small>
+                  <small id="evaluation-reasoning-hint">可用档位取决于模型。Codex 的 ultra 需要自动委派任务，账号测试仅发送单次请求。</small>
                 </div>
                 <div class="evaluation-question-summary"><span>本轮测试</span><strong>糖果题 <small>默认必测 / 答案 21</small></strong><label class="evaluation-optional-question"><input id="evaluation-include-pelican" type="checkbox" data-private="true" />同时测试鹈鹕题 <small>SVG / 动画</small></label><small id="evaluation-concurrency">并发按服务端配置</small></div>
                 <button class="button button-primary" type="submit" data-evaluation-start disabled>开始测试</button>

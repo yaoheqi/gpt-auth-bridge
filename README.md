@@ -76,7 +76,7 @@ HTTP worker 数量和 Chromium 辅助验证并发均使用 `TASK_CONCURRENCY`（
 
 API 接入模式支持基础地址（例如 `https://example.com/v1`）或完整接口地址、API Key，以及 Responses / Chat Completions 两种协议。地址需能从服务器访问；Key 仅保留在页面内存，不持久保存。两种模式均按服务器配置的 `OPENAI_PROXY_URL` 出口发送请求，未配置时直连。
 
-“测试模型”下方可设置“思考程度”，初始为中等（medium），支持模型默认、none、minimal、low、medium、high、xhigh、max 和 ultra。账号模式与 API 模式均使用本轮选择，测试期间锁定，结果标题显示所选程度；配置保存在当前浏览器。Responses 使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`；“模型默认”不发送该参数。具体可用值取决于模型和接入服务，不支持的值会由上游拒绝，不会自动降级重试。
+“测试模型”下方可设置“思考程度”，初始为中等（medium），可选择模型默认、none、minimal、low、medium、high、xhigh 或 max。账号测试每题只发送一次请求。Codex 0.169.0 在 gpt-6.2-astra 上选择 ultra 时会启用任务委派，主请求采用模型目录指定的 xhigh。账号测试因此禁用 ultra。自定义 API 若提供 ultra 扩展，可选择该档并按原值发送。账号模式与 API 模式均使用本轮选择，测试期间锁定，结果标题显示所选程度；配置保存在当前浏览器。Responses 使用 `reasoning.effort`，Chat Completions 使用 `reasoning_effort`；“模型默认”不发送该参数。具体可用值取决于模型和接入服务，不支持的值会由上游拒绝，不会自动降级重试。
 
 每个目标默认仅运行糖果题（沿用参考项目的摸馒头题，预期答案 21）；勾选“同时测试鹈鹕题”后增加动画题。页面调度和服务端统一使用配置文件中的 TASK_CONCURRENCY（例如配置为 10 时最多并行执行 10 题），不再固定为两题。结果区优先适配首屏高度，阶段、首字时间、耗时和输出 Token 默认收在“过程与统计”中。答案支持 Markdown 排版和原文切换。鹈鹕 HTML/SVG 在输出过程中约每 1.5 秒刷新预览，以 1024×768 画布缩放展示，点击画面即可放大；普通预览和放大窗口可同步暂停/继续 CSS 与 SMIL 动画，暂停动画不停止生成。预览保留独立沙箱来源，移除模型脚本和外部资源，仅允许应用固定的动画控制脚本通过随机 CSP nonce 运行；动画质量由用户评审。停止、超时或失败后保留已生成的部分内容，本轮结果不持久保存；单题请求超时为 150 秒。
 

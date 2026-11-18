@@ -6,6 +6,7 @@ import { evaluationAccountOwner, evaluationLogoutAccounts, evaluationResultOwner
 const TITLES = { candy: '糖果题', pelican: '鹈鹕骑自行车' };
 const STATUS = { queued: '排队中', connecting: '连接模型', waiting: '等待首字', generating: '生成中', passed: '答案正确（21）', wrong_answer: '答案错误', invalid_format: '格式不完整', manual_review: '待人工评审', error: '请求失败', cancelled: '已停止' };
 const ACTIVE = ['queued', 'connecting', 'waiting', 'generating'];
+const ACCOUNT_ULTRA_HINT = 'Codex 的 ultra 需要自动委派任务，账号测试仅发送单次请求。';
 const seconds = ms => ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`;
 
 export function initializeModelEvaluation({ request, getEligibility, getHeaders, isWorkspaceCurrent, onImport, getConcurrency,
@@ -16,6 +17,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   const start = panel.querySelector('[data-evaluation-start]'), stop = panel.querySelector('[data-evaluation-stop]');
   const results = panel.querySelector('[data-evaluation-results]');
   const status = find('status'), model = find('model'), reasoning = find('reasoning-effort'), fields = find('fields');
+  const ultraOption = reasoning.querySelector('option[value="ultra"]'), reasoningHint = find('reasoning-hint');
   const frame = find('preview-frame'), dialog = find('preview-dialog'), largeFrame = find('large-frame');
   let controller, timer, generation = 0, jobs = [], selected = -1;
   let lastPreview = '', lastPreviewAt = 0, previewTimer, previewJob = null;
@@ -51,9 +53,20 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     find('account-count').textContent = eligibility.pending ? `正在测活 ${eligibility.total} 个账号…`
       : `${eligibility.accounts.length} 个可测试账号 / ${eligibility.total} 个导入账号${eligibility.skippedFree ? ` · 已跳过 ${eligibility.skippedFree} 个 free 账号` : ''}`;
     const apiMode = mode() === 'api';
+    ultraOption.disabled = !apiMode;
+    const unavailableEffort = reasoning.value === 'ultra' && !apiMode;
+    if (unavailableEffort) {
+      reasoningHint.textContent = ACCOUNT_ULTRA_HINT + '请选择其他档位。';
+    } else {
+      const hints = [];
+      if (reasoning.value === 'ultra') hints.push('ultra 将按原值发送，仅适用于支持此扩展的 API 服务商。');
+      if (reasoning.value === 'default') hints.push('由模型选择思考程度。');
+      if (!apiMode && !hints.length) hints.push(ACCOUNT_ULTRA_HINT);
+      reasoningHint.textContent = hints.join('') || '可用档位取决于模型和 API 服务商。';
+    }
     find('accounts-source').hidden = apiMode;
     find('api-source').hidden = !apiMode;
-    start.disabled = Boolean(controller) || loggingOut || isPushBusy() || (!apiMode && !eligibility.accounts.length);
+    start.disabled = Boolean(controller) || loggingOut || isPushBusy() || unavailableEffort || (!apiMode && !eligibility.accounts.length);
     fields.disabled = Boolean(controller) || loggingOut;
     stop.disabled = !controller;
     const concurrency = getConcurrency();
@@ -221,6 +234,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
   for (const name of ['pause', 'large-pause']) find(name).addEventListener('click', () => { paused = !paused; syncPause(); });
   for (const target of [frame, largeFrame]) target.addEventListener('load', syncPause);
   panel.querySelectorAll('input[name="evaluation-source"]').forEach(input => input.addEventListener('change', () => { clearCopyStatus(); refresh(); }));
+  reasoning.addEventListener('change', refresh);
   for (const name of ['preview', 'output']) {
     find(`${name}-tab`).addEventListener('click', () => chooseView(name));
     find(`${name}-tab`).addEventListener('keydown', event => {
@@ -305,6 +319,7 @@ export function initializeModelEvaluation({ request, getEligibility, getHeaders,
     if (!reasoningEffort) { status.textContent = '请选择有效的思考程度。'; return; }
     if (!/^[a-zA-Z0-9._-]{1,100}$/.test(chosenModel)) { status.textContent = '请选择或输入有效模型名称。'; return; }
     const apiMode = mode() === 'api';
+    if (!apiMode && reasoningEffort === 'ultra') { status.textContent = ACCOUNT_ULTRA_HINT + '请选择其他档位。'; return; }
     const api = apiMode ? { baseUrl: find('api-url').value.trim(), key: find('api-key').value.trim(), protocol: find('protocol').value } : null;
     if (apiMode) {
       try { const url = new URL(api.baseUrl); if (!['http:', 'https:'].includes(url.protocol) || !api.key || url.username || url.password || url.hash || url.search) throw new Error(); }

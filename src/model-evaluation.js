@@ -15,6 +15,9 @@ export function validateEvaluation(body = {}) {
   if (!REASONING_EFFORTS.has(reasoningEffort)) {
     throw Object.assign(new Error('请选择有效的思考程度'), { statusCode: 400 });
   }
+  if (!api && reasoningEffort === 'ultra') {
+    throw Object.assign(new Error('账号模式的 ultra 需要 Codex 客户端执行任务委派。单次模型测试请另选思考程度。'), { statusCode: 400 });
+  }
   if (!Object.hasOwn(EVALUATION_QUESTIONS, question) || typeof model !== 'string' || !/^[a-zA-Z0-9._-]{1,100}$/.test(model)
     || (!api && (typeof account?.accessToken !== 'string' || !account.accessToken.trim() || account.accessToken.length > 32768 || /[\r\n]/.test(account.accessToken)
     || (account.accountId != null && (typeof account.accountId !== 'string' || account.accountId.length > 200 || /[\r\n]/.test(account.accountId)))))) {
@@ -50,6 +53,39 @@ function completedEvaluationText(response, streamedOutput = '') {
   if (!output) throw new Error('模型未返回文本');
   if (output.length > 256 * 1024) throw new Error('模型输出过大');
   return output;
+}
+
+// Report only the locally validated effort. Provider error strings can contain credentials.
+function checkEffortError(payload, effort, status) {
+  if (!payload || effort === 'default') return;
+  const detail = payload.error || payload.response?.error || payload.detail || payload;
+  const message = typeof detail === 'string' ? detail : String(detail.message || '');
+  const effortParam = /^(reasoning(?:[._]effort)?|effort)$/i.test(detail.param || '');
+  const namesEffort = /reasoning[\s._-]*effort/i.test(message) || message.toLowerCase().includes(`'${effort}'`) || message.toLowerCase().includes(`"${effort}"`);
+  if ((effortParam || namesEffort) && /unsupported|not supported|does not support|invalid|only supports?|supported values|not allowed|unknown parameter|unrecognized/i.test(`${detail.code || ''} ${message}`)) {
+    throw new Error(`模型接口不接受所选思考程度 ${effort}${status ? `（HTTP ${status}）` : ''}。请改选该接口支持的档位或“模型默认”。`);
+  }
+}
+
+async function readErrorPayload(body) {
+  if (!body) return null;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '', size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return JSON.parse(text + decoder.decode());
+      size += value.byteLength;
+      if (size > 16 * 1024) return null;
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    return null;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 export function parseEvaluationResponse(text) {
@@ -101,7 +137,12 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
         ...(account?.accountId ? { 'ChatGPT-Account-Id': account.accountId } : {}) },
       body: JSON.stringify(requestBody),
     });
-    if (!response.ok) { await response.body?.cancel(); throw new Error(`模型请求失败（HTTP ${response.status}）`); }
+    if (!response.ok) {
+      if ([400, 422].includes(response.status) && reasoningEffort !== 'default') {
+        checkEffortError(await readErrorPayload(response.body), reasoningEffort, response.status);
+      } else await response.body?.cancel();
+      throw new Error(`模型请求失败（HTTP ${response.status}）`);
+    }
     onEvent({ type: 'phase', phase: 'waiting' });
     let output = '', completed = false, firstTokenMs = null, usage = null;
     const append = delta => {
@@ -115,6 +156,7 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
       const text = await response.text();
       if (text.length > 1024 * 1024) throw new Error('模型响应过大');
       const data = JSON.parse(text);
+      if (data.error || data.status === 'failed') checkEffortError(data, reasoningEffort);
       if (protocol === 'chat') {
         if (data.error || data.choices?.[0]?.finish_reason !== 'stop') throw new Error('模型响应未完成');
         append(data.choices[0].message?.content);
@@ -123,6 +165,7 @@ export async function evaluateModel(body, { signal, fetchImpl, onEvent = () => {
       usage = data.usage;
     } else {
       await readEvaluationEvents(response.body, event => {
+        if (event.error || event.type === 'error' || event.type === 'response.failed' || event.response?.error) checkEffortError(event, reasoningEffort);
         if (event.error || ['error', 'response.failed', 'response.incomplete', 'response.cancelled'].includes(event.type)) throw new Error('模型返回失败或不完整的结果');
         if (event.type === 'response.output_text.delta') append(event.delta);
         if (['response.completed', 'response.done'].includes(event.type)) {

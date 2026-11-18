@@ -11,6 +11,12 @@ test('selected reasoning effort reaches account, Responses and Chat requests and
   for (const source of ['account', 'responses', 'chat']) {
     for (const reasoningEffort of ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
       const input = source === 'account' ? { account } : { api: { baseUrl: 'https://fixture.example/v1', key: 'fixture-key', protocol: source } };
+      if (source === 'account' && reasoningEffort === 'ultra') {
+        await assert.rejects(evaluateModel({ ...input, question: 'candy', model: 'gpt-6.2-astra', reasoningEffort }, {
+          fetchImpl: () => assert.fail('an agent-only mode must be rejected before the model call'),
+        }), { statusCode: 400, message: /ultra.*任务委派/ });
+        continue;
+      }
       const result = await evaluateModel({ ...input, question: 'candy', model: 'custom-model', reasoningEffort }, {
         fetchImpl: async (_url, init) => {
           const body = JSON.parse(init.body);
@@ -91,6 +97,32 @@ test('upstream failure does not reflect response contents or credentials', async
   await assert.rejects(evaluateModel({ account, question: 'candy' }, {
     fetchImpl: async () => new Response('fixture-token secret', { status: 401 }),
   }), { message: '模型请求失败（HTTP 401）' });
+});
+
+test('an API rejecting an effort gets a specific error without an implicit retry or upstream text disclosure', async () => {
+  const body = { api: { baseUrl: 'https://fixture.example', protocol: 'responses', key: 'fixture-key' },
+    question: 'candy', reasoningEffort: 'ultra', model: 'test-model' };
+  const error = { code: 'unsupported_value', param: 'reasoning.effort', message: 'fixture-private-value' };
+  const simpleError = { message: "Unsupported value: 'ultra' is not supported with the 'test-model' model. Supported values are: 'low' and 'max'." };
+  for (const response of [
+    Response.json({ error }, { status: 400 }),
+    Response.json({ detail: simpleError.message }, { status: 422 }),
+    new Response(sse([{ type: 'error', ...error }])),
+    new Response(sse([{ type: 'response.failed', response: { error } }])),
+    Response.json({ status: 'failed', error }),
+  ]) {
+    let calls = 0;
+    await assert.rejects(evaluateModel(body, { fetchImpl: () => { calls++; return response; } }), e => {
+      assert.match(e.message, /思考程度.*ultra/);
+      assert.doesNotMatch(e.message, /fixture-private-value|fixture-key/);
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+  for (const [status, detail] of [[400, { message: 'invalid model' }], [401, error], [429, error]]) {
+    await assert.rejects(evaluateModel(body, { fetchImpl: () => Response.json({ error: detail }, { status }) }),
+      { message: `模型请求失败（HTTP ${status}）` });
+  }
 });
 
 test('free accounts are rejected before model requests while API mode stays independent', async () => {

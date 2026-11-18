@@ -145,6 +145,46 @@ def main():
                 expect(page.locator('#shared-account-status')).to_contain_text('测活通过 5 个')
                 expect(page.locator('#evaluation-include-pelican')).not_to_be_checked()
                 expect(page.locator('#evaluation-concurrency')).to_have_text('服务端并发：10')
+                effort = page.locator('#evaluation-reasoning-effort')
+                ultra = effort.locator('option[value="ultra"]')
+                hint = page.locator('#evaluation-reasoning-hint')
+                accounts_mode = page.locator('input[name="evaluation-source"][value="accounts"]')
+                api_mode = page.locator('input[name="evaluation-source"][value="api"]')
+                expect(ultra).to_be_disabled()
+                api_mode.check()
+                expect(ultra).to_be_enabled()
+                effort.select_option('ultra')
+                expect(hint).to_contain_text('服务商')
+                accounts_mode.check()
+                expect(start).to_be_disabled()
+                expect(hint).to_contain_text('请选择其他档位')
+                for _ in range(100):
+                    if page.evaluate("""async () => {
+                        const fields = (await browserWorkspace.read())?.fields || [];
+                        return fields.some(f => f.id === 'evaluation-reasoning-effort' && f.value === 'ultra')
+                            && fields.some(f => f.name === 'evaluation-source' && f.value === 'accounts' && f.checked);
+                    }"""):
+                        break
+                    page.wait_for_timeout(50)
+                else:
+                    raise AssertionError('expected the account source and ultra preference to be saved')
+                page.reload()
+                page.wait_for_load_state('networkidle')
+                page.locator('#model-evaluation-tab').click()
+                expect(page.locator('#evaluation-account-count')).to_contain_text('2 个可测试账号')
+                expect(effort).to_have_value('ultra')
+                expect(start).to_be_disabled()
+                page.locator('#evaluation-form').dispatch_event('submit')
+                expect(page.locator('#evaluation-status')).to_contain_text('请选择其他档位')
+                assert not requests
+                api_mode.check()
+                expect(effort).to_have_value('ultra')
+                expect(start).to_be_enabled()
+                effort.select_option('max')
+                accounts_mode.check()
+                expect(effort).to_have_value('max')
+                expect(start).to_be_enabled()
+                effort.select_option('high')
                 start.click()
                 expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
                 assert len(requests) == 2
@@ -234,6 +274,7 @@ def main():
 
                 candy_answer = '29'
                 page.locator('#evaluation-include-pelican').uncheck()
+                effort.select_option('ultra')
                 start.click()
                 expect(page.locator('#evaluation-status')).to_contain_text('测试完成')
                 expect(page.locator('#evaluation-case-status')).to_have_text('答案错误')
@@ -242,6 +283,7 @@ def main():
                 expect(page.locator('#evaluation-output-note')).not_to_contain_text('部分内容')
                 expect(page.locator('#evaluation-status')).to_contain_text('答案错误 1')
                 expect(page.locator('#evaluation-status')).to_contain_text('请求失败 0')
+                assert upstream_requests[-1][2]['reasoning'] == {'effort': 'ultra'}
 
                 candy_answer = '21'
                 page.locator('#evaluation-include-pelican').check()
