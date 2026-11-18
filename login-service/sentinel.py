@@ -285,19 +285,19 @@ _TRANSIENT_NAVIGATION_REASONS = frozenset({
 
 
 class SentinelNavigationError(RuntimeError):
-    def __init__(self, http_status):
+    def __init__(self, http_status, edge_challenge=False):
         super().__init__('Validation document returned an HTTP error')
-        self.reason = 'HTTP_ERROR'
+        self.reason = 'EDGE_CHALLENGE' if edge_challenge else 'HTTP_ERROR'
         self.http_status = http_status
 
 
 def browser_failure_details(error):
     reason = getattr(error, 'reason', None)
     details = {}
-    if reason in ('HTTP_ERROR', 'SDK_NOT_READY'):
+    if reason in ('HTTP_ERROR', 'EDGE_CHALLENGE', 'SDK_NOT_READY'):
         details['reason'] = reason
         status = getattr(error, 'http_status', None)
-        if reason == 'HTTP_ERROR' and type(status) is int and 400 <= status <= 599:
+        if reason in ('HTTP_ERROR', 'EDGE_CHALLENGE') and type(status) is int and 400 <= status <= 599:
             details['httpStatus'] = status
     elif isinstance(error, PlaywrightError):
         message = str(error)
@@ -313,6 +313,8 @@ def browser_failure_details(error):
 
 def is_transient_navigation_error(error):
     details = browser_failure_details(error)
+    if details.get('reason') == 'EDGE_CHALLENGE':
+        return False
     return (details.get('reason') in _TRANSIENT_NAVIGATION_REASONS
             or details.get('httpStatus') in (502, 503, 504))
 
@@ -321,15 +323,22 @@ def _navigate_sentinel_page(page, authorize_url, remaining_ms):
     # A document commit is sufficient: wait for the SDK itself, not unrelated
     # images/scripts or DOMContentLoaded. Observe redirected documents as well.
     document_status = None
+    edge_challenge = False
+
+    def observe_document(response):
+        nonlocal document_status, edge_challenge
+        document_status = response.status
+        # Retain only an explicit challenge marker, never headers, URLs or body.
+        edge_challenge = (document_status >= 400
+                          and response.headers.get('cf-mitigated', '').lower() == 'challenge')
 
     def response_received(response):
-        nonlocal document_status
         if response.request.is_navigation_request() and response.frame == page.main_frame:
-            document_status = response.status
+            observe_document(response)
 
     def check_document():
         if document_status is not None and document_status >= 400:
-            raise SentinelNavigationError(document_status)
+            raise SentinelNavigationError(document_status, edge_challenge)
 
     page.on('response', response_received)
     try:
@@ -337,7 +346,7 @@ def _navigate_sentinel_page(page, authorize_url, remaining_ms):
         try:
             response = page.goto(authorize_url, wait_until='commit', timeout=remaining_ms(NAVIGATION_TIMEOUT_MS))
             if response is not None:
-                document_status = response.status
+                observe_document(response)
         except PlaywrightError as error:
             if browser_failure_details(error).get('reason') not in ('ERR_ABORTED', 'NAVIGATION_INTERRUPTED'):
                 raise

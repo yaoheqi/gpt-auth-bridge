@@ -178,6 +178,7 @@ export function createLoginChallengeMethods({
       const password = resolveOpenAiAccountPassword(this.account);
       if (!password) throw new Error('账号缺少 OpenAI 密码，无法完成密码登录');
       const sentinelToken = await this.fetchSentinelToken('password_verify');
+      this.log('辅助验证完成，提交账号密码');
       const response = await this.fetch(AUTH_PASSWORD_VERIFY_URL, {
         method: 'POST',
         headers: this.browserHeaders({
@@ -229,7 +230,6 @@ export function createLoginChallengeMethods({
         }).catch(() => null);
       }
 
-      this.log(`提交 TOTP 2FA 验证码 (factor=${factorId.slice(0, 8)}…)`);
       const sentinelToken = await this.fetchSentinelToken('authorize_continue');
       const code = generateTotpCode(this.account.two_factor_secret);
       const headers = this.browserHeaders({
@@ -239,6 +239,7 @@ export function createLoginChallengeMethods({
         referer: continueUrl || `${AUTH_BASE_URL}/mfa-challenge/${factorId}`,
       });
       if (sentinelToken) headers['openai-sentinel-token'] = sentinelToken;
+      this.log('辅助验证完成，提交 TOTP 2FA 验证码');
       const response = await this.fetch(AUTH_MFA_VERIFY_URL, {
         method: 'POST',
         headers,

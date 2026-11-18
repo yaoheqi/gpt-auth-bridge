@@ -114,6 +114,16 @@ test('MFA does not submit a code after validation context failure', async () => 
   flow.fetchSentinelToken = async () => { throw validationError('VALIDATION_CONTEXT_MISMATCH'); };
   await assert.rejects(flow.mfaValidate({ continueUrl: '/mfa-challenge/fixture',
     payload: { page: { payload: { factor_id: 'fixture' } } } }), { code: 'VALIDATION_CONTEXT_MISMATCH' });
+  assert.equal(flow.logs.some(message => /提交/.test(message)), false);
+});
+
+test('password validation failure never submits or logs a password submission', async () => {
+  const flow = flowWithTransport(() => assert.fail('blocked validation must not submit credentials'));
+  flow.fetchSentinelToken = async () => { throw validationError('BROWSER_NAVIGATION_FAILED', {
+    reason: 'EDGE_CHALLENGE', httpStatus: 403,
+  }); };
+  await assert.rejects(flow.passwordVerify(), { code: 'BROWSER_NAVIGATION_FAILED' });
+  assert.equal(flow.logs.some(message => /提交账号密码/.test(message)), false);
 });
 
 test('Web and Codex login use password and TOTP', async () => {

@@ -17,7 +17,7 @@ export const VALIDATION_FAILURES = Object.freeze({
 const stages = new Set(['sentinel', 'requirements', 'provider', 'browser_queue', 'browser_start',
   'browser_context', 'browser_navigation', 'browser_verify', 'browser_cleanup']);
 
-const reasons = new Set(['HTTP_ERROR', 'SDK_NOT_READY', 'NAVIGATION_TIMEOUT', 'NAVIGATION_INTERRUPTED',
+const reasons = new Set(['HTTP_ERROR', 'EDGE_CHALLENGE', 'SDK_NOT_READY', 'NAVIGATION_TIMEOUT', 'NAVIGATION_INTERRUPTED',
   'ERR_ABORTED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_TIMED_OUT',
   'ERR_TIMED_OUT', 'ERR_EMPTY_RESPONSE', 'ERR_NETWORK_CHANGED', 'ERR_NAME_NOT_RESOLVED',
   'ERR_CONNECTION_REFUSED', 'ERR_PROXY_CONNECTION_FAILED', 'ERR_TUNNEL_CONNECTION_FAILED',
@@ -30,7 +30,7 @@ export function validationFailureFields(input) {
   const failure = { code: source.code, retryable: false };
   if (stages.has(source.stage)) failure.stage = source.stage;
   if (reasons.has(source.reason)) failure.reason = source.reason;
-  if (failure.reason === 'HTTP_ERROR' && Number.isInteger(source.httpStatus) && source.httpStatus >= 400 && source.httpStatus <= 599) {
+  if (['HTTP_ERROR', 'EDGE_CHALLENGE'].includes(failure.reason) && Number.isInteger(source.httpStatus) && source.httpStatus >= 400 && source.httpStatus <= 599) {
     failure.httpStatus = source.httpStatus;
   }
   if (Number.isInteger(source.attempt) && source.attempt >= 1 && source.attempt <= 2) failure.attempt = source.attempt;
@@ -40,9 +40,20 @@ export function validationFailureFields(input) {
   return { validationFailure: failure };
 }
 
+export function isValidationAccessBlocked(input) {
+  const failure = validationFailureFields(input).validationFailure;
+  return failure?.code === 'BROWSER_NAVIGATION_FAILED' && (failure.reason === 'EDGE_CHALLENGE'
+    || (failure.reason === 'HTTP_ERROR' && [403, 429].includes(failure.httpStatus)));
+}
+
 export function validationFailureHint(input) {
   const failure = validationFailureFields(input).validationFailure;
   if (!failure) return '';
+  if (isValidationAccessBlocked(failure)) {
+    const detail = failure.reason === 'EDGE_CHALLENGE' ? `Cloudflare challenge${failure.httpStatus ? `，HTTP ${failure.httpStatus}` : ''}` : `HTTP ${failure.httpStatus}`;
+    if (failure.httpStatus === 429) return `验证页面请求受到限流，已停止自动重试；请稍后再试（${detail}）`;
+    return `上游限制了服务器浏览器访问，已停止自动重试；请在官方页面完成验证或联系服务方核查访问限制（${detail}）。此结果不能判断密码或 2FA 是否正确`;
+  }
   const detail = failure.httpStatus ? `HTTP ${failure.httpStatus}`
     : failure.reason === 'SDK_NOT_READY' ? '验证 SDK 未就绪'
       : failure.reason === 'NAVIGATION_TIMEOUT' ? '页面加载超时'
@@ -53,6 +64,7 @@ export function validationFailureHint(input) {
 export function validationFailureLabel(input) {
   const failure = validationFailureFields(input).validationFailure;
   if (!failure) return '';
+  if (isValidationAccessBlocked(failure)) return failure.httpStatus === 429 ? '上游请求限流' : '上游访问受限';
   if (failure.code === 'VALIDATION_TIMEOUT') return '辅助验证超时';
   if (failure.code === 'VALIDATION_CANCELLED') return '辅助验证已取消';
   return '辅助验证失败';

@@ -42,7 +42,7 @@ export function createCoreMethods({
             direct: this.directEgress,
             headers: this.browserHeaders({ accept: 'text/html,application/xhtml+xml,*/*' }),
           });
-          this.log(`代理连通性检测通过：HTTP ${result.status}，耗时 ${result.latencyMs}ms，开始正式流程`);
+          this.log(`HTTP 登录页连通性检测通过：HTTP ${result.status}，耗时 ${result.latencyMs}ms；浏览器辅助验证将单独检查`);
           return result;
         } catch (error) {
           this.log(error.message || String(error), 'error');

@@ -39,6 +39,14 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.server.document_calls += 1
             status = self.server.statuses.pop(0) if self.server.statuses else 200
             if status >= 400:
+                if self.server.edge_challenge:
+                    body = b'private-upstream-challenge'
+                    self.send_response(status)
+                    self.send_header('Cf-Mitigated', 'challenge')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 self.send_error(status, 'private-upstream-body')
                 return
             if self.server.no_sdk:
@@ -89,6 +97,7 @@ class SentinelRuntimeTest(unittest.TestCase):
         self.server.fail_secondary = False
         self.server.mismatch = ''
         self.server.statuses = []
+        self.server.edge_challenge = False
         self.server.document_calls = 0
         self.server.no_sdk = False
         self.server.block_asset = False
@@ -330,6 +339,28 @@ class SentinelRuntimeTest(unittest.TestCase):
                     self.assertEqual(payload['httpStatus'], status)
                     self.assertEqual(payload['attempt'], 1)
                     self.assertEqual(self.server.document_calls - before, 1)
+        finally:
+            runtime.close()
+
+    def test_edge_challenge_keeps_safe_reason_and_never_retries_even_on_503(self):
+        self.server.edge_challenge = True
+        runtime = browser_worker.BrowserRuntime()
+        try:
+            runtime.ensure(lambda *_: None)
+            for status in (403, 503):
+                with self.subTest(status=status):
+                    self.server.statuses = [status, status]
+                    before = self.server.document_calls
+                    with self.assertRaises(Exception) as caught:
+                        self.worker_request(runtime, deadlineSeconds=4)
+                    payload = browser_worker.error_payload(caught.exception)
+                    self.assertEqual(payload['code'], 'BROWSER_NAVIGATION_FAILED')
+                    self.assertEqual(payload['reason'], 'EDGE_CHALLENGE')
+                    self.assertEqual(payload['httpStatus'], status)
+                    self.assertEqual(payload['attempt'], 1)
+                    self.assertEqual(self.server.document_calls - before, 1)
+                    self.assertEqual(self.server.token_calls, 0)
+                    self.assertNotIn('private', json.dumps(payload))
         finally:
             runtime.close()
 

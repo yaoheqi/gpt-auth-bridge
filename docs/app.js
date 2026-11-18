@@ -2169,8 +2169,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (/交换.*(?:code|token)|转为?\s*RT|RT\s*(?:完成|成功|已获取|已就绪)/i.test(text)) return phase === 'codex' ? 4 : 6;
     if (/Business|workspace|工作区/i.test(text)) return phase === 'codex' ? 4 : 5;
     if (/登录完成|登录成功|Session\s*(?:已获取|已入库|有效)|accessToken/i.test(text)) return 4;
-    if (/提交\s*(?:TOTP|2FA)|2FA\/MFA|MFA\s*(?:验证|挑战)|输入\s*2FA/i.test(text)) return 3;
-    if (/提交账号密码|PasswordVerify|输入密码/i.test(text)) return 2;
+    if (/提交\s*(?:TOTP|2FA)|准备\s*2FA\s*验证|2FA\/MFA|MFA\s*(?:验证|挑战)|输入\s*2FA/i.test(text)) return 3;
+    if (/提交账号密码|准备密码验证|PasswordVerify|输入密码/i.test(text)) return 2;
     if (/提交登录邮箱|提交注册邮箱|输入账号|输入邮箱/i.test(text)) return 1;
     if (/打开官网|开始.*(?:登录|转换)|OAuth|authorize|ChatGPT Web/i.test(text)) return 0;
     return fallback;
@@ -2187,7 +2187,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     if (/等待.*队列调度/.test(text)) return '已加入队列，等待执行';
     if (/代理连通性检测开始/.test(text)) return '正在检测代理连通性';
     if (/代理连通性检测通过/.test(text)) return text.replace(/，开始正式流程.*$/, '');
-    if (/密码后进入 2FA\/MFA|提交\s*TOTP\s*2FA/.test(text)) return '提交 2FA 验证码';
+    if (/准备.*辅助验证/.test(text)) return text;
+    if (/提交\s*TOTP\s*2FA/.test(text)) return '提交 2FA 验证码';
     if (/选择默认工作区/.test(text)) return '授权默认工作区';
     return text.replace(/\s*\(factor=[^)]+\)/gi, '');
   }

@@ -27,6 +27,12 @@ def check_incremental_progress(browser, url):
         page.wait_for_function('() => !!window.fixtureStream')
         expect(page.locator('.login-account-progress')).to_have_count(200)
         page.evaluate('''() => {
+            sendProgress('account_log', {email: 'fixture-149@example.com', msg: '密码后进入 2FA/MFA，准备辅助验证'});
+        }''')
+        preparing = page.locator('.login-account-progress').nth(149).locator('.login-account-log')
+        expect(preparing).to_contain_text('准备辅助验证')
+        expect(preparing).not_to_contain_text('提交 2FA 验证码')
+        page.evaluate('''() => {
             for (let i = 0; i < 40; i++) sendProgress('account_log', {
                 email: 'fixture-150@example.com', msg: 'fixture progress ' + i, phase: 'codex'
             });
@@ -70,6 +76,9 @@ def check_incremental_progress(browser, url):
                 validationFailure: {code: 'VALIDATION_TIMEOUT', stage: 'browser_navigation', reason: 'SDK_NOT_READY'}});
             sendProgress('account_log', {email: 'fixture-153@example.com', msg: '提交账号密码'});
             sendProgress('account_done', {email: 'fixture-153@example.com', ok: false, error: '密码不正确'});
+            sendProgress('account_done', {email: 'fixture-154@example.com', ok: false, error: 'fixture-error',
+                validationFailure: {code: 'BROWSER_NAVIGATION_FAILED', stage: 'browser_navigation',
+                    attempt: 1, reason: 'EDGE_CHALLENGE', httpStatus: 403}});
             sendProgress('account_done', {email: 'fixture-150@example.com', ok: true, businessSuccess: 0,
                 timings: {total: {durationMs: 2500, calls: 1}}});
             sendProgress('summary', {ok: true, success: 1, failed: 0, results: [], accounts: []});
@@ -81,9 +90,13 @@ def check_incremental_progress(browser, url):
         expect(page.locator('.login-account-progress').nth(152).locator('.login-account-stage')).to_have_text('辅助验证超时')
         expect(page.locator('.login-account-progress').nth(152).locator('.login-account-log')).to_contain_text('验证 SDK 未就绪')
         expect(page.locator('.login-account-progress').nth(153).locator('.login-account-stage')).to_have_text('验证密码失败')
+        expect(page.locator('.login-account-progress').nth(154).locator('.login-account-stage')).to_have_text('上游访问受限')
+        expect(page.locator('.login-account-progress').nth(154).locator('.login-account-log')).to_contain_text('Cloudflare challenge，HTTP 403')
         page.wait_for_function("async () => (await browserWorkspace.read())?.state?.loginProgress?.[150]?.[1]?.timings?.total?.durationMs === 2500")
         page.reload()
         expect(page.locator('.login-account-progress')).to_have_count(200)
+        expect(page.locator('.login-account-progress').nth(154).locator('.login-account-stage')).to_have_text('上游访问受限')
+        expect(page.locator('.login-account-progress').nth(154).locator('.login-account-log')).to_contain_text('Cloudflare challenge，HTTP 403')
         expect(page.locator('.login-account-progress').nth(151).locator('.login-account-stage')).to_have_text('辅助验证失败')
         expect(page.locator('.login-account-progress').nth(151).locator('.login-account-log')).to_contain_text('HTTP 503')
         expect(page.locator('.login-account-progress').nth(152).locator('.login-account-stage')).to_have_text('辅助验证超时')

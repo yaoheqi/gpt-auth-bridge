@@ -1,4 +1,5 @@
 import { validationFailureFields } from '../../lib/validation-error.js';
+import { isValidationAccessBlocked } from '../../../docs/validation-failure.js';
 
 export const AUTH_FAILURE_CATEGORIES = Object.freeze({
   BROWSER_UNAVAILABLE: 'browser_unavailable',
@@ -23,6 +24,7 @@ export const AUTH_FAILURE_CATEGORIES = Object.freeze({
 });
 
 export function classifyAuthFailure(input = '') {
+  if (isValidationAccessBlocked(input)) return AUTH_FAILURE_CATEGORIES.EGRESS_BLOCKED;
   const code = validationFailureFields(input).validationFailure?.code;
   if (code === 'BROWSER_PROXY_FAILED') return AUTH_FAILURE_CATEGORIES.EGRESS_BLOCKED;
   if (code?.startsWith('BROWSER_')) return AUTH_FAILURE_CATEGORIES.BROWSER_UNAVAILABLE;

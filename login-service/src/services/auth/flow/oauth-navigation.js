@@ -130,14 +130,14 @@ export function createOAuthNavigationMethods({
           const nextPath = this.pathOf(result.continueUrl);
 
           if (pageType.includes('login_password') || nextPath === '/log-in/password') {
-            this.log('提交账号密码');
+            this.log('准备密码验证，先完成辅助验证');
             this.assertPasswordTotpCredentials();
             result = await this.passwordVerify();
             if (this.isMfaChallenge(result)) {
               this.mfaContinueUrl = result.continueUrl;
               this.mfaPayload = result.payload;
               this.mfaFactorId = this.extractMfaFactorId(result);
-              this.log('密码后进入 2FA/MFA，提交 TOTP');
+              this.log('密码后进入 2FA/MFA，准备辅助验证');
               result = await this.mfaValidate(result);
             }
             credentialAuthCompleted = true;
@@ -150,14 +150,14 @@ export function createOAuthNavigationMethods({
         }
 
         if (path === '/log-in/password') {
-          this.log('提交账号密码');
+          this.log('准备密码验证，先完成辅助验证');
           this.assertPasswordTotpCredentials();
           let result = await this.passwordVerify();
           if (this.isMfaChallenge(result)) {
             this.mfaContinueUrl = result.continueUrl;
             this.mfaPayload = result.payload;
             this.mfaFactorId = this.extractMfaFactorId(result);
-            this.log('密码后进入 2FA/MFA，提交 TOTP');
+            this.log('密码后进入 2FA/MFA，准备辅助验证');
             result = await this.mfaValidate(result);
           }
           credentialAuthCompleted = true;
@@ -173,7 +173,7 @@ export function createOAuthNavigationMethods({
           || path.startsWith('/two-factor')
           || path.includes('mfa')
         ) {
-          this.log('提交 TOTP 2FA 验证码');
+          this.log('准备 2FA 验证，先完成辅助验证');
           if (!this.mfaFactorId) {
             this.mfaFactorId = path.split('/').filter(Boolean).pop() || '';
             this.mfaContinueUrl = url;

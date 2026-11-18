@@ -19,6 +19,37 @@ import { createBrowserDiagnostics } from './browser-diagnostics.js';
 const challenge = async () => ({ ok: true, json: async () => ({ turnstile: { dx: 'fixture' } }) });
 const account = { id: 'fixture', email: 'fixture@example.com', password: 'fixture', two_factor_secret: 'JBSWY3DPEHPK3PXP' };
 
+test('edge challenges retain HTTP diagnostics and stop account retries without blaming credentials', async () => {
+  const failure = decodeBrowserFailure({ code: 'BROWSER_NAVIGATION_FAILED', stage: 'browser_navigation',
+    reason: 'EDGE_CHALLENGE', httpStatus: 503, attempt: 1, body: 'private-body' });
+  let calls = 0;
+  const result = await runProtocolLoginPipelineAccount(account, { workspaceMode: 'all', requireNonPersonal: true,
+    runAllWorkspaces: async () => { calls++; throw failure; } });
+  assert.equal(calls, 1);
+  assert.equal(result.validationFailure.reason, 'EDGE_CHALLENGE');
+  assert.equal(result.validationFailure.httpStatus, 503);
+  assert.equal(classifyAuthFailure(result), 'egress_blocked');
+  assert.equal(retryPolicyForFailure(classifyAuthFailure(result)).retry, false);
+  assert.equal(validationFailureLabel(result), '上游访问受限');
+  assert.match(validationFailureHint(result), /Cloudflare.*HTTP 503/);
+  assert.doesNotMatch(JSON.stringify(result), /private-body/);
+});
+
+test('navigation access failures remain distinct from missing provider configuration', async () => {
+  for (const [reason, httpStatus] of [['EDGE_CHALLENGE', 403], ['HTTP_ERROR', 403], ['HTTP_ERROR', 429]]) {
+    const fetchToken = createOpenAISentinelTokenFetcher({ getYesCaptchaSettings: () => ({ browserFallback: true }),
+      solveBrowserSentinel: async () => { throw validationError('BROWSER_NAVIGATION_FAILED', {
+        stage: 'browser_navigation', reason, httpStatus }); } });
+    await assert.rejects(fetchToken(challenge, 'device', 'password_verify'), error => {
+      assert.equal(error.code, 'BROWSER_NAVIGATION_FAILED');
+      assert.equal(error.httpStatus, httpStatus);
+      assert.match(error.message, new RegExp(`HTTP ${httpStatus}`));
+      assert.doesNotMatch(error.message, /YesCaptcha|sitekey|运行环境/);
+      return true;
+    });
+  }
+});
+
 test('structured browser errors survive protocol results, JSON and SSE without leaking cause', async () => {
   const error = decodeBrowserFailure({ code: 'BROWSER_CLOSED', stage: 'browser_navigation', attempt: 2,
     message: 'private-cookie', proxy: 'private-proxy', cleanupCode: 'BROWSER_CLEANUP_FAILED' });

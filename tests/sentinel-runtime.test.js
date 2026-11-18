@@ -10,6 +10,6 @@ test('browser login isolates drivers and recovers bounded browser and navigation
     windowsHide: true, timeout: 55000,
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
   });
-  assert.match(stderr, /Ran 25 tests/);
+  assert.match(stderr, /Ran 26 tests/);
   assert.doesNotMatch(stderr, /Task was destroyed|Future exception|TargetClosedError/);
 });

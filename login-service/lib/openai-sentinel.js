@@ -7,6 +7,7 @@ import { setImmediate as yieldToIO } from 'node:timers/promises';
 import { browserWorkerPool } from './browser-worker-pool.js';
 import { validationDeadline } from './validation-deadline.js';
 import { validationError, validationFailureFields } from './validation-error.js';
+import { isValidationAccessBlocked, validationFailureHint } from '../../docs/validation-failure.js';
 import { untilAborted } from './execution-limits.js';
 export { getPythonCandidates } from './browser-worker-pool.js';
 
@@ -254,6 +255,10 @@ export function createOpenAISentinelTokenFetcher({
         }
         if (!turnstileToken) {
           const error = failure || validationError('VALIDATION_CONFIG_MISSING', { stage: 'sentinel' });
+          if (isValidationAccessBlocked(error)) {
+            error.message = validationFailureHint(error);
+            throw error;
+          }
           error.message = `OpenAI 登录触发 Turnstile，自动求解失败：${errors.join(' | ')}。${settings.browserFallback
               ? '浏览器 Sentinel 回退已启用但执行失败，请检查浏览器运行环境及退出原因；也可配置 YESCAPTCHA_API_KEY / OPENAI_TURNSTILE_SITEKEY 作为备用通道'
               : '请启用浏览器 Sentinel 回退，或配置 YESCAPTCHA_API_KEY / OPENAI_TURNSTILE_SITEKEY'}`;
