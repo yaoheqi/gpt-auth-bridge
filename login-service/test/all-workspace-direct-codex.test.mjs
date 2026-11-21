@@ -83,7 +83,7 @@ for (const scenario of ['normal', 'stored', 'no-personal', 'non-personal', 'miss
       },
       createSmsBowerClient: () => ({}), getSmsProviderLabel: () => 'fixture', normalizePhoneMode: value => value,
       getPhoneOtpWaitTimeoutMs: () => 1000, getProtocolHumanTiming: () => ({}),
-      buildBrowserHeaders: headers => headers, summarizeFingerprint: () => 'fixture',
+      buildBrowserHeaders: headers => headers,
       fetchOpenAISentinelToken: async () => 'fixture-validation',
       preflightProxyEgress: async () => { preflights++; return { status: 200, latencyMs: 1 }; },
     });

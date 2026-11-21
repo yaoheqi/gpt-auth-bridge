@@ -4,7 +4,6 @@ import { humanPause as defaultHumanPause } from '../../../../lib/human-timing.js
 import defaultMakeFetchCookie from 'fetch-cookie';
 import { preflightProxyEgress as defaultPreflightProxyEgress } from '../../../../lib/proxy-preflight.js';
 import { sanitizeLogMessage as defaultSanitizeLogMessage } from '../../../../lib/log-sanitize.js';
-import { summarizeFingerprint as defaultSummarizeFingerprint } from '../../../../lib/device-fingerprint.js';
 
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
 export function createCoreMethods({
@@ -18,7 +17,6 @@ export function createCoreMethods({
   preflightProxyEgress = defaultPreflightProxyEgress,
   sanitizeLogMessage = defaultSanitizeLogMessage,
   sleep,
-  summarizeFingerprint = defaultSummarizeFingerprint,
 } = {}) {
   return {
     browserHeaders(init = {}) {
@@ -31,7 +29,7 @@ export function createCoreMethods({
 
     logProtocolHardening() {
       const smsWait = this.phoneMode === 'sms' ? ` · 单号等码=${Math.round(this.smsCodeTimeoutMs / 1000)}s` : '';
-      this.log(`协议隔离环境 ${this.isolationId.slice(0, 8)}: 独立Cookie/设备/OAuth状态 · 指纹=${summarizeFingerprint(this.fingerprint)} · 出口=${this.proxyLabel}${smsWait}`);
+      this.log(`协议授权指纹：${this.fingerprintSource || '来源未知'}${smsWait}`);
     },
 
     async ensureProxyConnectivity() {

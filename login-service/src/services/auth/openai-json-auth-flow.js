@@ -2,7 +2,6 @@ import { CookieJar as defaultCookieJar } from 'tough-cookie';
 import { createCurlCffiFetch as defaultCreateCurlCffiFetch } from '../../../lib/curl-cffi-fetch.js';
 import defaultMakeFetchCookie from 'fetch-cookie';
 import { measureStage as defaultMeasureStage } from '../../../lib/stage-timing.js';
-import { randomUUID as defaultRandomUUID } from 'crypto';
 import { createCoreMethods } from './flow/core.js';
 import { createLoginChallengeMethods } from './flow/login-challenges.js';
 import { createOAuthNavigationMethods } from './flow/oauth-navigation.js';
@@ -27,7 +26,6 @@ export function createOpenAIJsonAuthFlow(dependencies = {}) {
     makeFetchCookie = defaultMakeFetchCookie,
     measureStage = defaultMeasureStage,
     normalizePhoneMode,
-    randomUUID = defaultRandomUUID,
   } = dependencies;
   class OpenAIJsonAuthFlow {
     constructor(account, sse, {
@@ -43,9 +41,9 @@ export function createOpenAIJsonAuthFlow(dependencies = {}) {
     } = {}) {
       this.account = account;
       this.sse = sse;
-      this.isolationId = randomUUID();
       const session = createAccountSessionDeviceAndProxy(account, { proxyPool, directWhenProxyPoolEmpty });
       this.fingerprint = session.fingerprint;
+      this.fingerprintSource = session.fingerprintSource;
       this.proxyUrl = session.proxy.proxyUrl;
       this.directEgress = session.proxy.mode === 'direct';
       this.proxyLabel = session.proxy.label;

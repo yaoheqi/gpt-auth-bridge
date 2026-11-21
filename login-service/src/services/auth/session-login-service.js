@@ -14,6 +14,7 @@ import { normalizeTotpSecret as defaultNormalizeTotpSecret } from '../../../lib/
 import { nowIso as defaultNowIso } from './auth-records.js';
 import { protocolLoginCredentialIssue as defaultProtocolLoginCredentialIssue } from '../../domain/accounts/account-domain.js';
 import { randomUUID as defaultRandomUUID } from 'crypto';
+import { usesFixedProtocolFingerprint } from '../../lib/fingerprint-schema.js';
 
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
 export function createSessionLoginService({
@@ -121,9 +122,11 @@ export function createSessionLoginService({
     return cookies;
   }
 
-  function sessionProbeHeaders(storageStateJson, fingerprintJson = '') {
+  function sessionProbeHeaders(storageStateJson, fingerprintJson = '', settings = getProtocolSettings()) {
     const cookies = storageStateCookies(storageStateJson);
-    const fingerprint = normalizeStoredFingerprint(fingerprintJson) || STATIC_DEVICE_FINGERPRINT;
+    const fingerprint = usesFixedProtocolFingerprint(settings)
+      ? STATIC_DEVICE_FINGERPRINT
+      : normalizeStoredFingerprint(fingerprintJson) || STATIC_DEVICE_FINGERPRINT;
     const cookieHeader = [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
     return {
       ...buildBrowserHeaders({
@@ -145,7 +148,7 @@ export function createSessionLoginService({
     direct = false,
   } = {}) {
     const settings = getProtocolSettings();
-    const headers = sessionProbeHeaders(storageStateJson, fingerprintJson);
+    const headers = sessionProbeHeaders(storageStateJson, fingerprintJson, settings);
     const hasExactProxy = exactProxyUrl !== undefined || direct;
     const selectedProxy = hasExactProxy ? String(exactProxyUrl || '') : resolveSessionProxy({ pool: settings.proxyPool }).proxyUrl;
     const proxies = [selectedProxy];

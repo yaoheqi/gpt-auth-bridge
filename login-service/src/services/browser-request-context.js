@@ -78,7 +78,12 @@ export function browserRequestMiddleware({ settings, createPushService, strictRo
         : req.path === '/api/v2/admin/protocol/settings' ? 'protocolSettings' : '';
       if (settingKey && req.method === 'PUT') {
         const { browserState: _ignored, ...patch } = req.body;
-        context.clientSettings[settingKey] = { ...context.clientSettings[settingKey], ...patch };
+        const updated = { ...context.clientSettings[settingKey], ...patch };
+        if (settingKey === 'protocolSettings' && (patch.random_fingerprint != null || patch.randomFingerprint != null)) {
+          updated.randomFingerprint = patch.random_fingerprint ?? patch.randomFingerprint;
+          delete updated.random_fingerprint;
+        }
+        context.clientSettings[settingKey] = updated;
       }
       context.push.configure(context.settings.get('sub2apiSettings'));
       res.locals.browserSnapshot = (ids) => ({

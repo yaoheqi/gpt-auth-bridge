@@ -46,7 +46,7 @@ import { proxyHealthRegistry } from './lib/proxy-health.js';
 import { normalizeHumanTimingSettings, sampleHumanDelayMs } from './lib/human-timing.js';
 import { isOpenAiRateLimitError } from './src/lib/openai-auth-error.js';
 import { normalizeAuthMode, authModeToPhoneMode } from './src/lib/auth-mode.js';
-import { normalizeFingerprintRecord, stringifyFingerprintRecord } from './src/lib/fingerprint-schema.js';
+import { applyAccountFingerprint, normalizeFingerprintRecord, protocolFlag, usesFixedProtocolFingerprint } from './src/lib/fingerprint-schema.js';
 import { createDynamicSemaphore } from './lib/async-semaphore.js';
 import { createSmsProviderClient, createCaptchaProviderClient } from './src/services/provider-client-factories.js';
 import { OPENAI_STAGES, inferOpenAiStage } from './lib/account-stages.js';
@@ -480,8 +480,8 @@ async function ensureYesCaptchaSettings() {
 }
 
 const DEFAULT_PROTOCOL_SETTINGS = {
-  enabled: !['0', 'false', 'no'].includes(String(process.env.PROTOCOL_HARDENING_ENABLED || 'true').trim().toLowerCase()),
-  randomFingerprint: !['0', 'false', 'no'].includes(String(process.env.PROTOCOL_RANDOM_FINGERPRINT || 'true').trim().toLowerCase()),
+  enabled: protocolFlag(process.env.PROTOCOL_HARDENING_ENABLED, true),
+  randomFingerprint: protocolFlag(process.env.PROTOCOL_RANDOM_FINGERPRINT, true),
   fingerprintRegion: normalizeFingerprintRegionSetting(process.env.PROTOCOL_FINGERPRINT_REGION || 'AUTO'),
   humanPacingEnabled: !['0', 'false', 'no'].includes(String(process.env.PROTOCOL_HUMAN_PACING || 'true').trim().toLowerCase()),
   accountGapMsMin: Math.max(0, Number(process.env.PROTOCOL_ACCOUNT_GAP_MS_MIN || 12000) || 12000),
@@ -506,16 +506,8 @@ function normalizeProtocolSettings(value = {}) {
   const proxyPool = String(value.proxyPool ?? value.proxy_pool ?? DEFAULT_PROTOCOL_SETTINGS.proxyPool).trim();
   parseProxyPool(proxyPool);
   return {
-    enabled: value.enabled === false || value.enabled === '0' || value.enabled === 0
-      ? false
-      : value.enabled == null
-        ? DEFAULT_PROTOCOL_SETTINGS.enabled
-        : Boolean(value.enabled),
-    randomFingerprint: value.randomFingerprint === false || value.random_fingerprint === false || value.randomFingerprint === '0'
-      ? false
-      : value.randomFingerprint == null && value.random_fingerprint == null
-        ? DEFAULT_PROTOCOL_SETTINGS.randomFingerprint
-        : Boolean(value.randomFingerprint ?? value.random_fingerprint),
+    enabled: protocolFlag(value.enabled, DEFAULT_PROTOCOL_SETTINGS.enabled),
+    randomFingerprint: protocolFlag(value.random_fingerprint ?? value.randomFingerprint, DEFAULT_PROTOCOL_SETTINGS.randomFingerprint),
     fingerprintRegion: normalizeFingerprintRegionSetting(
       value.fingerprintRegion ?? value.fingerprint_region ?? DEFAULT_PROTOCOL_SETTINGS.fingerprintRegion,
     ),
@@ -628,9 +620,8 @@ function createSessionDeviceAndProxy({ proxyPool, directWhenProxyPoolEmpty = fal
   if (hardeningOn && String(settings.fingerprintRegion || '').toUpperCase() === 'AUTO') {
     void refreshEgressFingerprintRegion().catch(() => {});
   }
-  const fingerprint = hardeningOn && settings.randomFingerprint
-    ? generateFingerprint(resolveEffectiveFingerprintRegion(settings))
-    : STATIC_DEVICE_FINGERPRINT;
+  const fixed = usesFixedProtocolFingerprint(settings);
+  const fingerprint = fixed ? STATIC_DEVICE_FINGERPRINT : generateFingerprint(resolveEffectiveFingerprintRegion(settings));
 
   const hasRequestProxyPool = proxyPool !== undefined;
   const proxy = resolveSessionProxy({
@@ -639,7 +630,7 @@ function createSessionDeviceAndProxy({ proxyPool, directWhenProxyPoolEmpty = fal
     directWhenEmpty: hasRequestProxyPool && directWhenProxyPoolEmpty,
     refreshSession: !hasRequestProxyPool,
   });
-  return { fingerprint, proxy, settings };
+  return { fingerprint, fingerprintSource: fixed ? '固定模板' : '本次生成', proxy, settings };
 }
 
 function currentEgressBinding() {
@@ -672,22 +663,14 @@ function createAccountSessionDeviceAndProxy(account = null, network = {}) {
   const requestScopedNetwork = network.proxyPool !== undefined;
   const egress = requestScopedNetwork ? null : currentEgressBinding();
   if (egress) noteAccountEgressMismatch(account, egress);
-  let fingerprint = normalizeStoredFingerprint(account.fingerprint_json);
-  if (!fingerprint) {
-    fingerprint = session.fingerprint;
-    account.fingerprint_json = stringifyFingerprintRecord(fingerprint);
-    account.fingerprint_created_at = account.fingerprint_created_at || nowIso();
-  } else if (!Number(fingerprint.schemaVersion || 0)) {
-    account.fingerprint_json = stringifyFingerprintRecord(fingerprint);
-  }
-  account.fingerprint_region = fingerprint.region || account.fingerprint_region || '';
+  applyAccountFingerprint(session, account, normalizeStoredFingerprint, nowIso);
   if (egress) {
     account.egress_country = account.egress_country || egress.egress_country;
     account.egress_ip = account.egress_ip || egress.egress_ip;
     account.egress_source = account.egress_source || egress.egress_source;
   }
   account.updatedAt = nowIso();
-  return { ...session, fingerprint };
+  return session;
 }
 
 function createYesCaptchaClient(settings = getYesCaptchaSettings()) {

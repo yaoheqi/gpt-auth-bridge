@@ -131,6 +131,17 @@ test('one entrypoint serves the UI, canonical/legacy APIs, SSE and browser-owned
       assert.equal(response.status, 200);
       assert.equal((await response.json()).ok, true);
     }
+    let fingerprintState = { accounts: [], settings: { protocolSettings: { random_fingerprint: true } } };
+    for (const [patch, expected] of [[{ randomFingerprint: 'false' }, false], [{}, false], [{ random_fingerprint: true }, true]]) {
+      const response = await fetch(`${app.url}/api/v2/admin/protocol/settings`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...patch, browserState: fingerprintState }),
+      });
+      const result = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(result.settings.randomFingerprint, expected);
+      fingerprintState = result.browserState;
+    }
     const health = await fetch(`${app.url}/api/session-health`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"accounts":[]}',
     });
