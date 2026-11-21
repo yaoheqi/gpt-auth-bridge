@@ -16,6 +16,9 @@ export const VALIDATION_FAILURES = Object.freeze({
   EMAIL_VERIFICATION_REQUIRED: '上游仍要求邮箱验证，无法继续密码登录；已停止自动重试，请在官方页面完成验证后再试',
   AUTH_CONTINUATION_FAILED: '身份验证后的 OAuth 授权未完成，已停止重复提交密码和 2FA；请稍后重试或在官方页面核查登录状态',
   WORKSPACE_DISCOVERY_FAILED: '账号验证已完成，但当前认证响应、授权页和 Cookie 均未提供可用工作区列表；已停止重复提交密码和 2FA',
+  WORKSPACE_CATALOG_UNAVAILABLE: '授权服务已返回首个 RT，但缺少可用的工作区列表，无法确认其归属。本次未保存该凭据。',
+  WORKSPACE_OWNERSHIP_UNCONFIRMED: '工作区归属信息不足或互相矛盾，已停止保存本次凭据。',
+  WORKSPACE_CREDENTIAL_CONFLICT: '两个工作区返回了同一份 RT，已停止写入其他工作区。先前确认的归属仍有效。',
 });
 const stages = new Set(['sentinel', 'requirements', 'provider', 'browser_queue', 'browser_start',
   'browser_context', 'browser_navigation', 'browser_verify', 'browser_cleanup']);
@@ -27,12 +30,20 @@ const reasons = new Set(['HTTP_ERROR', 'EDGE_CHALLENGE', 'SDK_NOT_READY', 'NAVIG
   'ERR_SOCKS_CONNECTION_FAILED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CERT_DATE_INVALID',
   'ERR_CERT_COMMON_NAME_INVALID', 'ERR_SSL_PROTOCOL_ERROR']);
 
+const catalogReasons = Object.freeze({
+  EMPTY_CATALOG: '工作区列表为空',
+  WORKSPACE_SESSION_MISSING: '缺少工作区会话信息',
+  WORKSPACE_SESSION_INVALID: '工作区会话信息不可解析',
+});
+
 export function validationFailureFields(input) {
   const source = input?.validationFailure || input;
   if (!source || !Object.hasOwn(VALIDATION_FAILURES, source.code)) return {};
   const failure = { code: source.code, retryable: false };
   if (stages.has(source.stage)) failure.stage = source.stage;
-  if (reasons.has(source.reason)) failure.reason = source.reason;
+  if (typeof source.reason === 'string' && (source.code === 'WORKSPACE_CATALOG_UNAVAILABLE' ? Object.hasOwn(catalogReasons, source.reason) : reasons.has(source.reason))) {
+    failure.reason = source.reason;
+  }
   if (['HTTP_ERROR', 'EDGE_CHALLENGE'].includes(failure.reason) && Number.isInteger(source.httpStatus) && source.httpStatus >= 400 && source.httpStatus <= 599) {
     failure.httpStatus = source.httpStatus;
   }
@@ -52,6 +63,9 @@ export function isValidationAccessBlocked(input) {
 export function validationFailureHint(input) {
   const failure = validationFailureFields(input).validationFailure;
   if (!failure) return '';
+  if (failure.code === 'WORKSPACE_CATALOG_UNAVAILABLE' && failure.reason) {
+    return `已返回首个 RT。${catalogReasons[failure.reason]}，无法核对凭据归属。本次未保存凭据。请在官方页面核对当前账号可访问的工作区。`;
+  }
   if (isValidationAccessBlocked(failure)) {
     const detail = failure.reason === 'EDGE_CHALLENGE' ? `Cloudflare challenge${failure.httpStatus ? `，HTTP ${failure.httpStatus}` : ''}` : `HTTP ${failure.httpStatus}`;
     if (failure.httpStatus === 429) return `验证页面请求受到限流，已停止自动重试；请稍后再试（${detail}）`;
@@ -71,6 +85,7 @@ export function validationFailureLabel(input) {
   if (failure.code === 'EMAIL_VERIFICATION_REQUIRED') return '需要邮箱验证';
   if (failure.code === 'AUTH_CONTINUATION_FAILED') return '登录授权未完成';
   if (failure.code === 'WORKSPACE_DISCOVERY_FAILED') return '工作区授权失败';
+  if (['WORKSPACE_CATALOG_UNAVAILABLE', 'WORKSPACE_OWNERSHIP_UNCONFIRMED', 'WORKSPACE_CREDENTIAL_CONFLICT'].includes(failure.code)) return '工作区归属待确认';
   if (failure.code === 'VALIDATION_TIMEOUT') return '辅助验证超时';
   if (failure.code === 'VALIDATION_CANCELLED') return '辅助验证已取消';
   return '辅助验证失败';

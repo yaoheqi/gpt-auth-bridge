@@ -2096,7 +2096,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     }
   }
 
-  const LOGIN_STAGES = ["连接 Codex", "输入账号", "验证密码", "验证 2FA", "获取首个 RT", "授权工作区", "完成"];
+  const LOGIN_STAGES = ["连接 Codex", "输入账号", "验证密码", "验证 2FA", "获取首个 RT", "核对与授权工作区", "完成"];
   const SESSION_LOGIN_STAGES = ["连接 ChatGPT", "输入账号", "验证密码", "验证 2FA", "获取 Session"];
   const ACCOUNT_ACTION_STAGES = ["准备账号操作", "输入账号", "验证密码", "验证 2FA", "建立会话", "处理工作区", "完成"];
   function loginStagesForMode(mode) {
@@ -3804,9 +3804,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         if (name === "account_start") {
           appendLoginProgress(record, "准备检测代理连通性", { stage: 0, status: "running", time: data.time });
         } else if (name === "account_phase") {
-          const stage = data.phase === "business" ? 5 : 0;
-          const message = data.phase === "business" ? "逐个授权已加入的工作区" : "准备检测代理连通性";
-          appendLoginProgress(record, message, { stage, status: "running", time: data.time });
+          if (data.phase === "workspace_catalog") {
+            appendLoginProgress(record, "已收到首个 RT，正在核对工作区归属", { stage: 5, status: "running", time: data.time });
+          } else if (data.phase === "business") {
+            appendLoginProgress(record, "逐个授权已加入的工作区", { stage: 5, status: "running", time: data.time });
+          }
         } else if (name === "account_log") {
           appendLoginProgress(record, data.msg || data.error, {
             stage: data.phase === "business" ? 5 : inferLoginStage(data.msg || data.error, record?.stage || 0, data.phase),
@@ -3819,7 +3821,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
           if (data.ok) {
             const doneText = workspaceMode === "session"
               ? "协议登录完成，Session 已就绪"
-              : `RT 已就绪：个人 ${data.personalOk ? 1 : 0} 个，工作区 ${data.businessSuccess || 0} 个`;
+              : data.personalOk && !data.businessSuccess ? "个人工作区 RT 已保存"
+                : `RT 已就绪：个人 ${data.personalOk ? 1 : 0} 个，非个人工作区 ${data.businessSuccess || 0} 个`;
             appendLoginProgress(record, doneText, { stage: workspaceMode === "session" ? 4 : 6, status: "success" });
           } else {
             const hint = validationFailureHint(data);

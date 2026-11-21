@@ -1,9 +1,10 @@
-import { extractBusinessWorkspaceIds, readWorkspaceSessionPayload, resolveWorkspaceSelection } from '../../lib/business-workspace.js';
+import { readWorkspaceSessionPayload } from '../../lib/business-workspace.js';
+import { normalizeCatalog, workspaceOwnershipKind } from '../../lib/workspace-page.js';
 import { protocolLoginCredentialIssue } from '../domain/accounts/account-domain.js';
 import { withAccountTimings, measureStage } from '../../lib/stage-timing.js';
 import { accountQueueDuration } from '../../lib/task-concurrency.js';
 import { terminalLoginFailure } from './monitor-coordinator.js';
-import { validationFailureFields } from '../../lib/validation-error.js';
+import { validationError, validationFailureFields } from '../../lib/validation-error.js';
 import { requestSignal } from './request-scope.js';
 
 // Old clients may still submit personal; it now includes all workspaces.
@@ -84,15 +85,24 @@ export async function runAllWorkspaceCodexAuth({
   try {
     onPhase('codex');
     const first = await flow.run();
-    if (!first?.refresh_token) throw new Error('Codex 授权未返回 refresh_token');
+    const firstToken = typeof first?.refresh_token === 'string' ? first.refresh_token.trim() : '';
+    if (!firstToken) throw new Error('Codex 授权未返回 refresh_token');
+    result.phase = 'workspace_catalog';
+    onPhase('workspace_catalog');
     const storage = await flow.exportCookieStorageState();
     // Redirect-only grants can still have their catalog in the auth cookies.
     const catalog = flow.discoveredWorkspaces || readWorkspaceSessionPayload(JSON.parse(storage).cookies).workspaces;
-    const workspaceIds = extractBusinessWorkspaceIds({ session_json: { workspaces: catalog } });
-    const firstId = first.account_id || flow.selectedWorkspaceId || resolveWorkspaceSelection({ workspaces: catalog }, flow.workspaceSelection);
-    if (!catalog.some(workspace => String(workspace.id) === firstId)) throw new Error('授权结果不属于已发现的工作区');
-    const firstIsBusiness = workspaceIds.includes(firstId);
-    if (firstIsBusiness) {
+    if (catalog.length === 0) throw validationError('WORKSPACE_CATALOG_UNAVAILABLE', { reason: 'EMPTY_CATALOG' });
+    const { workspaces } = normalizeCatalog(catalog);
+    const returnedId = first.account_id;
+    const selectedId = flow.selectedWorkspaceId;
+    if (returnedId && selectedId && returnedId !== selectedId) throw validationError('WORKSPACE_OWNERSHIP_UNCONFIRMED');
+    const onlyPersonal = workspaces.length === 1 && workspaces[0].kind === 'personal';
+    const firstId = returnedId || selectedId || (onlyPersonal ? workspaces[0].id : '');
+    const owner = workspaces.find(workspace => workspace.id === firstId);
+    if (!owner || workspaces.some(workspace => !workspaceOwnershipKind(workspace.kind))) throw validationError('WORKSPACE_OWNERSHIP_UNCONFIRMED');
+    const workspaceIds = workspaces.filter(workspace => workspaceOwnershipKind(workspace.kind) === 'business').map(workspace => workspace.id);
+    if (owner.kind !== 'personal') {
       await persistBusiness(first, firstId);
       result.businessSuccess = 1;
     } else {
@@ -102,17 +112,24 @@ export async function runAllWorkspaceCodexAuth({
     }
     await persistCookies(storage);
     result.businessTotal = workspaceIds.length;
+    const remainingIds = workspaceIds.filter(id => id !== firstId);
+    if (!remainingIds.length) {
+      return { ...result, ok: true, phase: 'done' };
+    }
+    const savedTokens = new Set([firstToken]);
     result.phase = 'business';
     onPhase('business');
-    flow.log(`发现 ${workspaceIds.length} 个 Business 工作区，复用本次 Codex 登录逐个授权`);
-    for (const workspaceId of workspaceIds) {
-      if (firstIsBusiness && workspaceId === firstId) continue;
+    for (const workspaceId of remainingIds) {
       try {
         flow.workspaceSelection = { mode: 'id', workspaceId };
         flow.forbidPhoneChallenge = true;
         flow.log(`授权 Business 工作区 ${workspaceId}`);
         const record = await measureStage('workspace', () => flow.loginCodexWithPhone({ preserveAuthSession: true }));
+        if (record?.account_id && record.account_id !== workspaceId) throw validationError('WORKSPACE_OWNERSHIP_UNCONFIRMED');
+        const token = String(record?.refresh_token || '').trim();
+        if (savedTokens.has(token)) throw validationError('WORKSPACE_CREDENTIAL_CONFLICT');
         await persistBusiness(record, workspaceId);
+        savedTokens.add(token);
         result.businessSuccess += 1;
       } catch (error) {
         requestSignal()?.throwIfAborted();
@@ -128,8 +145,13 @@ export async function runAllWorkspaceCodexAuth({
     if (!result.ok) result.error = result.businessErrors.join('；');
   } catch (error) {
     requestSignal()?.throwIfAborted();
-    result.error = error.message || String(error);
-    Object.assign(result, validationFailureFields(error));
+    const catalogMissing = result.phase === 'workspace_catalog'
+      && ['WORKSPACE_SESSION_MISSING', 'WORKSPACE_SESSION_INVALID'].includes(error?.code);
+    let failure = error;
+    if (catalogMissing) failure = validationError('WORKSPACE_CATALOG_UNAVAILABLE', { reason: error.code });
+    if (result.phase === 'workspace_catalog' && error?.code === 'WORKSPACE_PAGE_INVALID') failure = validationError('WORKSPACE_OWNERSHIP_UNCONFIRMED');
+    result.error = failure.message || String(failure);
+    Object.assign(result, validationFailureFields(failure));
   } finally {
     await flow.dispose();
   }

@@ -298,10 +298,7 @@ export function createOAuthNavigationMethods({
         throw new Error(`Codex OAuth 仍要求手机验证，已按要求禁止新接码: ${this.pathOf(continueURL) || continueURL}`);
       }
 
-      this.log(this.forbidPhoneChallenge
-        ? '工作区授权完成，交换 code 获取 refresh_token'
-        : 'Codex 授权完成，交换 code 获取 refresh_token');
-      this.log(`继续 OAuth 跳转: ${continueURL}`);
+      this.log('等待 OAuth 回调');
       const result = await this.followOAuthRedirects(continueURL);
       if (isAgentIdentityRecord(result)) return result;
       return this.exchangeCodeForToken(result.code);
@@ -363,6 +360,7 @@ export function createOAuthNavigationMethods({
 
     async exchangeCodeForToken(code) {
       this.assertNonPersonalWorkspace();
+      this.log('已验证 OAuth 回调，开始交换 code 获取 refresh_token');
       let lastError = '';
       for (const tokenURL of AUTH_OAUTH_TOKEN_URLS) {
         const body = buildAuthorizationCodeTokenBody(code, this.codeVerifier, OPENAI_CODEX_REDIRECT_URI);

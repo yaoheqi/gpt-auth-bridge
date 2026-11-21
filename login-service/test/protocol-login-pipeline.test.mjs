@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeProtocolPipelineMode, runProtocolLoginPipelineAccount, runAllWorkspaceCodexAuth } from '../src/services/protocol-login-pipeline.js';
 import { executions } from '../src/services/request-scope.js';
+import { validationFailureHint, validationFailureLabel } from '../../docs/validation-failure.js';
 
 const account = { id: 'account-1', email: 'fixture@example.com', password: 'fixture-password', two_factor_secret: 'JBSWY3DPEHPK3PXP' };
 
@@ -114,7 +115,7 @@ function fixture({ workspaces = ['business-1', 'business-2'], failed = '' } = {}
   const calls = [];
   const flow = {
     discoveredWorkspaces: [{ id: 'personal', kind: 'personal' }, ...workspaces.map(id => ({ id, kind: 'business' }))],
-    run: async () => { calls.push('login'); return { refresh_token: 'personal-rt' }; },
+    run: async () => { calls.push('login'); return { refresh_token: 'personal-rt', account_id: 'personal' }; },
     exportCookieStorageState: async () => '{"cookies":[]}',
     loginCodexWithPhone: async options => {
       assert.equal(options.preserveAuthSession, true);
@@ -138,7 +139,9 @@ function fixture({ workspaces = ['business-1', 'business-2'], failed = '' } = {}
 
 test('one Codex login processes personal then every unique workspace even if cookies change', async () => {
   const { calls, options } = fixture({ workspaces: ['business-1', 'business-1', 'business-2'] });
-  const result = await runAllWorkspaceCodexAuth(options);
+  const phases = [];
+  const result = await runAllWorkspaceCodexAuth({ ...options, onPhase: phase => phases.push(phase) });
+  assert.deepEqual(phases, ['codex', 'workspace_catalog', 'business']);
   assert.equal(result.ok, true);
   assert.equal(result.sessionOk, false);
   assert.equal(result.personalOk, true);
@@ -147,12 +150,84 @@ test('one Codex login processes personal then every unique workspace even if coo
   assert.deepEqual(calls, ['login', 'save-personal', 'save-cookies', 'business-1', 'save-business-1', 'business-2', 'save-business-2', 'save-cookies', 'dispose']);
 });
 
-test('zero Business workspaces still returns personal RT success', async () => {
-  const { options } = fixture({ workspaces: [] });
+test('a confirmed personal-only workspace saves once and completes without another grant', async () => {
+  for (const accountId of ['personal', undefined]) {
+    const { options, flow, calls } = fixture({ workspaces: [] });
+    flow.run = async () => { calls.push('login'); return { refresh_token: 'fixture', account_id: accountId }; };
+    const phases = [];
+    const result = await runAllWorkspaceCodexAuth({ ...options, onPhase: phase => phases.push(phase) });
+    assert.deepEqual(phases, ['codex', 'workspace_catalog']);
+    assert.equal(result.ok, true);
+    assert.equal(result.personalOk, true);
+    assert.equal(result.businessTotal, 0);
+    assert.deepEqual(calls, ['login', 'save-personal', 'save-cookies', 'dispose']);
+  }
+});
+
+test('ambiguous workspace ownership never writes the first RT to either account record', async () => {
+  const personal = { id: 'p', kind: 'personal' };
+  const team = { id: 't', kind: 'business' };
+  const cases = [
+    { catalog: [personal, team], returned: '', selected: '' },
+    { catalog: [personal, team], returned: 'p', selected: 't' },
+    { catalog: [personal, { id: 'p', kind: 'business' }], returned: 'p' },
+    { catalog: [{ id: 'p', kind: 'personal', structure: 'workspace' }], returned: 'p' },
+    { catalog: [{ id: 'p', kind: 'unknown' }], returned: 'p' },
+    { catalog: [personal], returned: 'unlisted' },
+  ];
+  for (const { catalog, returned, selected } of cases) {
+    const { options, flow, calls } = fixture();
+    flow.discoveredWorkspaces = catalog;
+    flow.selectedWorkspaceId = selected;
+    flow.run = async () => ({ refresh_token: 'fixture', account_id: returned });
+    const result = await runAllWorkspaceCodexAuth(options);
+    assert.equal(validationFailureLabel(result), '工作区归属待确认');
+    assert.equal(result.personalOk, false);
+    assert.equal(result.businessSuccess, 0);
+    assert.deepEqual(calls, ['dispose']);
+  }
+});
+
+test('a subsequent workspace cannot reuse the RT already saved for the personal workspace', async () => {
+  const { options, flow, calls } = fixture({ workspaces: ['business-1'] });
+  flow.loginCodexWithPhone = async () => ({ account_id: 'business-1', refresh_token: ' personal-rt ' });
   const result = await runAllWorkspaceCodexAuth(options);
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(result.personalOk, true);
-  assert.equal(result.businessTotal, 0);
+  assert.equal(result.businessSuccess, 0);
+  assert.equal(calls.includes('save-business-1'), false);
+});
+
+test('an unconfirmed workspace stops at catalog verification with an allowlisted reason in either mode', async () => {
+  const cases = [
+    [null, 'WORKSPACE_SESSION_MISSING', '缺少工作区会话信息'],
+    [[], 'EMPTY_CATALOG', '工作区列表为空'],
+    ['invalid-cookie', 'WORKSPACE_SESSION_INVALID', '工作区会话信息不可解析'],
+  ];
+  for (const requireNonPersonal of [false, true]) {
+    for (const [catalog, reason, detail] of cases) {
+      const { flow, calls, options } = fixture();
+      flow.requireNonPersonal = requireNonPersonal;
+      flow.discoveredWorkspaces = Array.isArray(catalog) ? catalog : null;
+      if (catalog === 'invalid-cookie') {
+        flow.exportCookieStorageState = async () => JSON.stringify({ cookies: [{ name: 'oai-client-auth-session', value: 'invalid' }] });
+      }
+      const phases = [];
+      const result = await runProtocolLoginPipelineAccount(account, {
+        workspaceMode: 'all', requireNonPersonal,
+        runAllWorkspaces: () => runAllWorkspaceCodexAuth({ ...options, onPhase: phase => phases.push(phase) }),
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.phase, 'workspace_catalog');
+      assert.deepEqual(phases, ['codex', 'workspace_catalog']);
+      assert.deepEqual(result.validationFailure, { code: 'WORKSPACE_CATALOG_UNAVAILABLE', retryable: false, reason });
+      assert.equal(validationFailureLabel(result), '工作区归属待确认');
+      assert.ok(validationFailureHint(result).includes(detail));
+      assert.equal(result.personalOk, false);
+      assert.equal(result.businessSuccess, 0);
+      assert.deepEqual(calls, ['login', 'dispose']);
+    }
+  }
 });
 
 test('workspace failure does not stop the remaining workspaces or conceal partial results', async () => {

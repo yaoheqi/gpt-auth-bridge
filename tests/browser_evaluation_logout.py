@@ -146,7 +146,7 @@ def check_non_personal_control(browser, url):
         page.locator('#start-protocol-login').click()
         expect(page.locator('#login-status')).to_contain_text('完成')
         assert calls[0]['workspaceMode'] == 'all'
-        expect(page.locator('#login-workbench')).to_contain_text('个人 0 个，工作区 1 个')
+        expect(page.locator('#login-workbench')).to_contain_text('个人 0 个，非个人工作区 1 个')
         page.reload()
         expect(checkbox).to_be_checked()
         page.locator('input[name="login-workspace-mode"][value="session"]').check()

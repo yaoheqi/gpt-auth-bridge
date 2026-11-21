@@ -4,7 +4,14 @@ function invalidWorkspacePage() {
   });
 }
 
-function normalizeCatalog(value) {
+const businessWorkspaceKinds = new Set(['workspace', 'organization', 'team', 'business', 'enterprise']);
+
+export function workspaceOwnershipKind(kind) {
+  if (kind === 'personal') return 'personal';
+  return businessWorkspaceKinds.has(kind) ? 'business' : null;
+}
+
+export function normalizeCatalog(value) {
   if (!Array.isArray(value)) throw invalidWorkspacePage();
   const workspaces = new Map();
   for (const item of value) {
@@ -12,6 +19,15 @@ function normalizeCatalog(value) {
     const kind = item?.kind ?? item?.type ?? item?.structure;
     if (typeof id !== 'string' || !id.trim() || typeof kind !== 'string' || !kind.trim()) throw invalidWorkspacePage();
     const workspace = { id: id.trim(), kind: kind.trim().toLowerCase() };
+    const ownership = workspaceOwnershipKind(workspace.kind);
+    for (const alias of [item.kind, item.type, item.structure]) {
+      if (alias == null) continue;
+      const label = typeof alias === 'string' ? alias.trim().toLowerCase() : '';
+      if (label !== workspace.kind && (!ownership || workspaceOwnershipKind(label) !== ownership)) {
+        throw invalidWorkspacePage();
+      }
+    }
+    if (item.workspace_id != null && (typeof item.workspace_id !== 'string' || item.workspace_id.trim() !== workspace.id)) throw invalidWorkspacePage();
     if (workspaces.has(workspace.id) && workspaces.get(workspace.id).kind !== workspace.kind) throw invalidWorkspacePage();
     workspaces.set(workspace.id, workspace);
   }
