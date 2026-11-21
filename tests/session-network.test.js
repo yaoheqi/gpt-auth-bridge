@@ -87,6 +87,65 @@ test('token-only health with usage uses a single upstream request', async () => 
   assert.equal(result.usage.fiveHour.usedPercent, 25);
 });
 
+test('reset credits use the detail count, then available Codex cards, then the usage summary', async () => {
+  const cards = [
+    { reset_type: 'CODEX_RATE_LIMITS', status: 'available', id: 'private-card' },
+    { resetType: 'codex_rate_limits' }, null,
+    { status: 'redeemed' }, { reset_type: 'other', status: 'available' },
+  ];
+  for (const [detail, summary, expected] of [
+    [{ available_count: 0, credits: cards }, 7, 0],
+    [{ availableCount: ' 3 ', credits: 'malformed' }, undefined, 3],
+    [{ credits: [] }, 7, 0], [cards, 7, 2],
+    [{ available_count: -1, items: cards }, 7, 2],
+    [{ data: cards }, 7, 2], [{ rate_limit_reset_credits: cards }, 7, 2],
+    [{ available_count: false }, 7, 7], [{ credits: 'malformed' }, '0', 0],
+    [{ available_count: '2.7' }, undefined, null], [{}, undefined, null],
+  ]) {
+    const paths = [];
+    const result = await checkSessionHealth({ ...account, accountId: 'workspace' }, {
+      includeUsage: true, includeResetCredits: true,
+      fetchImpl: async (url, init) => {
+        const path = new URL(url).pathname;
+        paths.push(path);
+        assert.equal(init.headers.Authorization, 'Bearer fixture-access-token');
+        assert.equal(init.headers['chatgpt-account-id'], 'workspace');
+        if (path.endsWith('/usage')) return Response.json({ rate_limit_reset_credits: { available_count: summary } });
+        assert.equal(init.method, 'GET');
+        assert.equal(init.redirect, 'manual');
+        return Response.json(detail);
+      },
+    });
+    assert.deepEqual(paths, ['/backend-api/wham/usage', '/backend-api/wham/rate-limit-reset-credits']);
+    assert.equal(result.resetCreditCount, expected);
+    assert.equal(result.status, 200);
+    assert.doesNotMatch(JSON.stringify(result), /private-card|fixture-access-token/);
+  }
+});
+
+test('a reset credit detail failure leaves account health and device results intact', async () => {
+  for (const failedDetail of [() => new Response('', { status: 403 }), () => new Response('invalid'), () => { throw new Error('network'); }]) {
+    const result = await checkSessionHealth({ ...account, cookie: 'fixture-only' }, {
+      includeUsage: true, includeDevices: true, includeResetCredits: true, fetchImpl: async url => {
+        if (url.endsWith('/me')) return Response.json({});
+        if (url.endsWith('/sessions')) return Response.json({ devices: [] });
+        if (url.endsWith('/usage')) return Response.json({ rate_limit: {}, rate_limit_reset_credits: { available_count: 4 } });
+        return failedDetail();
+      },
+    });
+    assert.equal(result.resetCreditCount, 4);
+    assert.equal(result.usageStatus, 200);
+    assert.equal(result.deviceCount, 0);
+    assert.equal(result.status, 200);
+  }
+  const unhealthy = await checkSessionHealth(account, { includeResetCredits: true, fetchImpl: async url => {
+    assert.ok(url.endsWith('/usage'));
+    return new Response('', { status: 401 });
+  } });
+  assert.equal(unhealthy.status, 401);
+  assert.equal(unhealthy.resetCreditCount, null);
+});
+
 test('OAuth probes preserve a deactivated error code without exposing the upstream payload', async () => {
   const result = await checkSessionHealth(account, { fetchImpl: async () => Response.json({ error: { code: 'account_deactivated', message: 'private detail' } }, { status: 401 }) });
   assert.equal(result.code, 'account_deactivated');

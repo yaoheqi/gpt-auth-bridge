@@ -21,19 +21,23 @@ export async function withSessionTransport(run, { signal, pool, createFetch = cr
   }
 }
 
-export async function checkSessionHealth(account, { includeUsage = false, includeDevices = false, includeTrial = false, ...options } = {}) {
+export async function checkSessionHealth(account, { includeUsage = false, includeDevices = false, includeTrial = false, includeResetCredits = false, ...options } = {}) {
   const hasCookie = Boolean(account?.cookie || account?.cookies || account?.sessionCookie);
   const health = hasCookie ? await probeToken(account, options) : await probeUsage(account, options);
-  const usage = includeUsage ? (hasCookie ? await probeUsage(account, options) : health) : null;
+  const queryCredits = includeResetCredits && health.status === 200;
+  const quota = hasCookie && (includeUsage || queryCredits) ? await probeUsage(account, options) : health;
+  const usage = includeUsage ? quota : null;
+  const resetCreditCount = queryCredits ? (await probeResetCreditCount(account, options) ?? quota.resetCreditCount ?? null) : null;
   const devices = includeDevices && health.status === 200 ? await probeDevices(account, options) : null;
   const trial = includeTrial && health.status === 200 ? await probePlusTrial(account, options) : null;
-  return { ...health, trial, usage: usage?.usage || null, usageStatus: usage?.status ?? null, usageError: usage?.error || '',
+  return { ...health, trial, resetCreditCount, usage: usage?.usage || null, usageStatus: usage?.status ?? null, usageError: usage?.error || '',
     devices: devices?.devices ?? null, firstLoginAt: devices?.firstLoginAt ?? null, lastLoginAt: devices?.lastLoginAt ?? null,
     deviceCount: devices?.deviceCount ?? null, devicesStatus: devices?.status ?? null, devicesError: devices?.error || '' };
 }
 
 const PROBE_URL = "https://chatgpt.com/backend-api/me";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const RESET_CREDITS_PATH = '/backend-api/wham/rate-limit-reset-credits';
 const SESSIONS_URL = "https://chatgpt.com/backend-api/accounts/sessions";
 const LOGOUT_ALL_URL = "https://chatgpt.com/backend-api/accounts/logout_all";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36";
@@ -151,6 +155,43 @@ function normalizeUsage(payload) {
   };
 }
 
+function availableCreditCount(payload) {
+  for (let value of [payload?.available_count, payload?.availableCount]) {
+    if (typeof value === 'string' && /^\+?\d+$/.test(value.trim())) value = Number(value);
+    if (Number.isSafeInteger(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+async function probeResetCreditCount(account, { fetchImpl, signal }) {
+  signal?.throwIfAborted();
+  try {
+    const response = await fetchImpl(`https://chatgpt.com${RESET_CREDITS_PATH}`, {
+      method: 'GET', redirect: 'manual',
+      headers: { ...buildProbeHeaders(account, RESET_CREDITS_PATH), 'OpenAI-Beta': 'codex-1', Originator: 'Codex Desktop' },
+      signal: AbortSignal.any([AbortSignal.timeout(20_000), signal].filter(Boolean)),
+    });
+    if (!response.ok) { await response.body?.cancel(); return null; }
+    const payload = await response.json();
+    const count = availableCreditCount(payload);
+    if (count !== null) return count;
+    const cards = Array.isArray(payload) ? payload : payload?.credits ?? payload?.rate_limit_reset_credits ?? payload?.items ?? payload?.data;
+    if (!Array.isArray(cards)) return null;
+    let available = 0;
+    for (const card of cards) {
+      if (card == null) continue;
+      if (typeof card !== 'object' || Array.isArray(card)) return null;
+      const type = (card.reset_type?.trim() || card.resetType?.trim() || '').toLowerCase();
+      const status = (card.status?.trim() || '').toLowerCase();
+      if ((!type || type === 'codex_rate_limits') && (!status || status === 'available')) available++;
+    }
+    return available;
+  } catch {
+    signal?.throwIfAborted();
+    return null;
+  }
+}
+
 export async function probeUsage(account, { fetchImpl, signal } = {}) {
   const token = String(account?.accessToken || "").trim();
   if (!token) return { status: null, usage: null, error: "缺少 access token" };
@@ -160,7 +201,8 @@ export async function probeUsage(account, { fetchImpl, signal } = {}) {
   try {
     const response = await fetchImpl(USAGE_URL, { headers, signal: AbortSignal.any([controller.signal, signal].filter(Boolean)) });
     const payload = await response.json().catch(() => null);
-    return { status: response.status, code: extractErrorCode(payload), usage: response.ok ? normalizeUsage(payload) : null, error: response.ok ? "" : `HTTP ${response.status}` };
+    return { status: response.status, code: extractErrorCode(payload), usage: response.ok ? normalizeUsage(payload) : null,
+      resetCreditCount: response.ok ? availableCreditCount(payload?.rate_limit_reset_credits) : null, error: response.ok ? "" : `HTTP ${response.status}` };
   } catch (error) { return { status: null, usage: null, error: String(error?.message || error).slice(0, 512) }; }
   finally { clearTimeout(timer); }
 }

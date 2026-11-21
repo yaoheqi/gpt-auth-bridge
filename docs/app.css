@@ -1554,6 +1554,7 @@ textarea[readonly] {
 }
 
 .health-table { max-height: 280px; }
+.health-table table { min-width: 44rem; }
 
 .logout-progress {
   max-height: 150px;

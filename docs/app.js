@@ -1570,6 +1570,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
        <td><div class="cell-clip" title="${escapeHtml(status + logoutText)}">${escapeHtml(status + logoutText)}</div></td>
        <td>${escapeHtml(formatWindow(usage?.fiveHour, planHasNoFiveHourWindow(usage?.planType)))}</td>
        <td>${escapeHtml(formatWindow(usage?.sevenDay))}</td>
+       <td>${Number.isSafeInteger(result?.resetCreditCount) && result.resetCreditCount >= 0 ? result.resetCreditCount : "未知"}</td>
        <td title="${escapeHtml(result?.devicesError || '当前登录设备列表中的设备数量')}"><button type="button" class="device-count" data-device-index="${escapeHtml(String(result?.index ?? ""))}" aria-label="查看 ${escapeHtml(item.name || item.email || '账号')} 的在线设备详情">${Number.isInteger(result?.deviceCount) && result.deviceCount >= 0 ? result.deviceCount : '未知'}</button></td>
        <td title="${escapeHtml(result?.trial?.error || [result?.trial?.reason, result?.trial?.warning].filter(Boolean).join('；') || '尚未检测')}">${result?.trial?.eligible === true ? '有资格' : result?.trial?.eligible === false ? '无资格' : '未知'}${result?.trial?.country ? `（${escapeHtml(result.trial.country)}）` : ''}</td>
        <td class="login-times"><span>最早：${escapeHtml(formatLoginTime(result?.firstLoginAt))}</span><span>最近：${escapeHtml(formatLoginTime(result?.lastLoginAt))}</span></td>
@@ -1579,7 +1580,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
   function renderHealth() {
     if (state.format === "sub2api-tools") {
       if (!toolHealthComplete()) {
-         elements.healthBody.innerHTML = '<tr><td colspan="8" class="empty">等待测活。</td></tr>';
+         elements.healthBody.innerHTML = '<tr><td colspan="9" class="empty">等待测活。</td></tr>';
         return;
       }
       const show200 = elements.healthFilter.value !== "non200";
@@ -1594,12 +1595,12 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
         name: record.account?.name,
         email: record.account?.credentials?.email || record.account?.extra?.email,
         sourceName: "sub2api",
-       }, { ...result, usage: recordUsage(record, result) }, state.logoutResults.find((item) => item.index === result?.index))).join("") || `<tr><td colspan="8" class="empty">没有符合当前筛选的账号。</td></tr>`;
+       }, { ...result, usage: recordUsage(record, result) }, state.logoutResults.find((item) => item.index === result?.index))).join("") || `<tr><td colspan="9" class="empty">没有符合当前筛选的账号。</td></tr>`;
       return;
     }
     const complete = healthComplete();
     if (!complete) {
-       elements.healthBody.innerHTML = '<tr><td colspan="8" class="empty">等待测活。</td></tr>';
+       elements.healthBody.innerHTML = '<tr><td colspan="9" class="empty">等待测活。</td></tr>';
       return;
     }
     const show200 = elements.healthFilter.value !== "non200";
@@ -1608,7 +1609,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       .filter(({ item, result }) => !skipFreeConverted(item) && (show200 ? result?.status === 200 : result?.status !== 200));
     elements.healthBody.innerHTML = filtered
       .map(({ item, result }) => healthRow(item, result, state.logoutResults.find((logout) => logout.index === result?.index)))
-       .join("") || `<tr><td colspan="8" class="empty">没有${show200 ? " HTTP 200" : "非 200"}账号。</td></tr>`;
+       .join("") || `<tr><td colspan="9" class="empty">没有${show200 ? " HTTP 200" : "非 200"}账号。</td></tr>`;
   }
 
   async function readJsonResponse(response) {
@@ -1728,7 +1729,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       const response = await pageFetch('/api/session-health', {
         method: 'POST', signal: controller.signal, credentials: 'same-origin',
         headers: loginProxyHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ includeUsage: true, includeDevices: true, includeTrial: true, concurrency, accounts }),
+        body: JSON.stringify({ includeUsage: true, includeResetCredits: true, includeDevices: true, includeTrial: true, concurrency, accounts }),
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);

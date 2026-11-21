@@ -566,7 +566,7 @@ async function testAutomaticHealthFilterAndDownloadScope() {
           return {
             concurrency: 30,
             results: [
-              { index: 0, status: 200, error: "", deviceCount: 2, firstLoginAt: 1700000000000, lastLoginAt: 1800000000000,
+              { index: 0, status: 200, error: "", resetCreditCount: 3, deviceCount: 2, firstLoginAt: 1700000000000, lastLoginAt: 1800000000000,
                 trial: { eligible: true, country: 'US', reason: '<script>fixture</script>' },
                 devices: [{ apps: ['Codex'], description: 'Computer', platform: 'windows', current: true,
                   location: '<script>city</script>', createdAt: 1700000000000, lastLoginAt: 1800000000000 }] },
@@ -595,11 +595,13 @@ async function testAutomaticHealthFilterAndDownloadScope() {
   assert.equal(JSON.parse(requests[0].init.body).accounts.length, 2);
   assert.equal(JSON.parse(requests[0].init.body).concurrency, 5);
   assert.equal(JSON.parse(requests[0].init.body).includeDevices, true);
+  assert.equal(JSON.parse(requests[0].init.body).includeResetCredits, true);
   assert.equal(JSON.parse(requests[0].init.body).includeTrial, true);
   assert.match(elements.get("#health-body").innerHTML, /有资格（US）/);
   assert.match(elements.get("#health-body").innerHTML, /&lt;script&gt;fixture&lt;\/script&gt;/);
   assert.doesNotMatch(elements.get("#health-body").innerHTML, /<script>/);
   assert.match(elements.get("#health-body").innerHTML, />2<\/button>/);
+  assert.match(elements.get("#health-body").innerHTML, /<td>3<\/td>\s*<td[^>]*><button[^>]*class="device-count"/);
   assert.match(elements.get("#health-body").innerHTML, /最早：/);
   assert.match(elements.get("#health-body").innerHTML, /最近：/);
   elements.get("#health-body").listeners.click({ target: { closest: () => ({ dataset: { deviceIndex: '0' } }) } });
@@ -620,6 +622,7 @@ async function testAutomaticHealthFilterAndDownloadScope() {
   filter.value = "non200";
   dispatch(filter, "change");
   assert.match(elements.get("#health-body").innerHTML, /invalid@example\.com/);
+  assert.match(elements.get("#health-body").innerHTML, /<td>未知<\/td>\s*<td[^>]*><button[^>]*class="device-count"/);
   assert.doesNotMatch(elements.get("#health-body").innerHTML, /alive@example\.com/);
 
   scope.value = "all";
@@ -985,7 +988,7 @@ async function testSub2apiToolsRenderUsageWindows() {
         const request = JSON.parse(init.body);
         assert.equal(request.includeUsage, true);
         assert.equal(request.includeDevices, true);
-        return { results: [{ index: 0, status: 200, deviceCount: 0, usage: {
+        return { results: [{ index: 0, status: 200, resetCreditCount: 0, deviceCount: 0, usage: {
           fiveHour: { usedPercent: 0, resetAfterSeconds: 3600 },
           sevenDay: { usedPercent: 0, resetAfterSeconds: 86400 },
           fetchedAt: Date.now(),
@@ -999,6 +1002,7 @@ async function testSub2apiToolsRenderUsageWindows() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.match(elements.get("#health-body").innerHTML, /0%/);
   assert.match(elements.get("#health-body").innerHTML, />0<\/button>/);
+  assert.match(elements.get("#health-body").innerHTML, /<td>0<\/td>\s*<td[^>]*><button[^>]*class="device-count"/);
 }
 
 async function testTeamPlusProUsageFiltersDoNotRequireFiveHourWindow() {
