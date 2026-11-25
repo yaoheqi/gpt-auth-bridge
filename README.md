@@ -138,6 +138,8 @@ Token 输入会处理 JWT 的粘贴换行、零宽字符、Bearer 前缀、JSON 
 
 默认 **全部工作区 RT**：直接走 Codex OAuth，获取个人 RT，再沿用同一 Cookie、设备和代理连接授权已加入的工作区；不先登录 ChatGPT Web。部分工作区失败仍可导出成功结果。
 
+个人账号与工作区 RT 下载继续使用 Sub2API 的 `sub2api-data` v1 格式。OAuth 的 `client_id` 会扁平写入 `credentials.client_id`；`credentials.expires_at` 使用 RFC3339，供 Sub2API 提前刷新。只有缺少 RT 的纯 access-token 账号才会同时设置账号级 Unix `expires_at` 与 `auto_pause_on_expired: true`；空 RT/ID token、`expires_in` 和重复的 `credentials.account_id` 不再写入。
+
 页面步骤对应“连接 Codex → 账号 / 密码 / 2FA → 获取个人 RT → 授权工作区 → 完成”。开头的代理连通性检查只验证出口能到达认证服务，不执行 ChatGPT Web 登录；没有 Web Session 或已有过期 Session 时，都从 Codex OAuth 直接验证账号。每个工作区单独交换授权码和 RT，复用本次认证；若上游要求再次验证，则按实际授权步骤处理。
 
 工作区列表优先从当前授权页的结构化数据读取，兼容 React Router 流式数据；页面未提供时才读取工作区 Cookie。已完成密码和 TOTP 验证后，缺少工作区数据会明确报错，不再通过重复登录尝试修复。

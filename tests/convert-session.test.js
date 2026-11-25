@@ -144,24 +144,58 @@ function jwtWithPayload(payload) {
   ].join(".");
 }
 
-function testRefreshTokenAlwaysUsesCodexCliClientId() {
+function testSub2apiRefreshTokenUsesIssuingClientId() {
   const { elements } = loadPageScript();
   const input = elements.get("#session-input");
   const output = elements.get("#output");
 
   input.value = JSON.stringify({
     user: { email: "mark@example.com" },
-    accessToken: jwtWithPayload({
-      azp: "stale-web-client",
-      "https://api.openai.com/auth": { chatgpt_account_id: "chatgpt-account-1" },
-    }),
-    refreshToken: "real-refresh-token",
-    client_id: "stale-imported-client",
+    tokens: {
+      access_token: jwtWithPayload({
+        azp: "jwt-client",
+        "https://api.openai.com/auth": { chatgpt_account_id: "chatgpt-account-1" },
+      }),
+      refresh_token: "real-refresh-token",
+      oauth_provenance: {
+        issuer: "https://auth.openai.com",
+        client_id: "issuing-client",
+      },
+    },
   });
   dispatch(input, "input");
 
   const document = JSON.parse(output.value);
-  assert.equal(document.accounts[0].credentials.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
+  assert.equal(document.accounts[0].credentials.client_id, "issuing-client");
+  assert.equal(document.accounts[0].credentials.oauth_provenance, undefined);
+}
+
+function testSub2apiDoesNotMixDifferentOAuthTokenBundles() {
+  const { elements } = loadPageScript();
+  const input = elements.get("#session-input");
+  const output = elements.get("#output");
+  input.value = JSON.stringify({
+    email: "selected@example.com",
+    accessToken: jwtWithPayload({
+      exp: 1_780_000_000,
+      "https://api.openai.com/auth": { chatgpt_account_id: "selected-account" },
+    }),
+    tokens: {
+      access_token: jwtWithPayload({
+        exp: 1_790_000_000,
+        "https://api.openai.com/auth": { chatgpt_account_id: "other-account" },
+      }),
+      refresh_token: "other-refresh-token",
+      oauth_provenance: { client_id: "other-client" },
+    },
+  });
+  dispatch(input, "input");
+  assert.ok(output.value, elements.get("#input-status").textContent);
+  const account = JSON.parse(output.value).accounts[0];
+  assert.equal(account.credentials.refresh_token, undefined);
+  assert.equal(account.credentials.client_id, undefined);
+  assert.equal(account.credentials.chatgpt_account_id, "selected-account");
+  assert.equal(account.expires_at, 1_780_000_000);
 }
 
 function testSub2apiAccountUsesAccessTokenExpiry() {
@@ -183,6 +217,8 @@ function testSub2apiAccountUsesAccessTokenExpiry() {
   dispatch(input, "input");
 
   const document = JSON.parse(output.value);
+  assert.equal(document.type, "sub2api-data");
+  assert.equal(document.version, 1);
   const account = document.accounts[0];
 
   assert.equal(document.expires_at, undefined);
@@ -190,6 +226,11 @@ function testSub2apiAccountUsesAccessTokenExpiry() {
   assert.equal(document.accounts.length, 1);
   assert.equal(account.expires_at, 1780473960);
   assert.equal(account.auto_pause_on_expired, true);
+  assert.equal(account.credentials.expires_at, "2026-06-03T08:06:00Z");
+  assert.equal(account.credentials.expires_in, undefined);
+  assert.equal(account.credentials.refresh_token, undefined);
+  assert.equal(account.credentials.id_token, undefined);
+  assert.equal(account.credentials.client_id, undefined);
   assert.equal(account.concurrency, 50);
   assert.equal(account.load_factor, 1000);
   assert.equal(account.priority, 1);
@@ -200,6 +241,25 @@ function testSub2apiAccountUsesAccessTokenExpiry() {
     "gpt-6-astra": "gpt-6-astra",
   });
   assert.equal(account.extra.codex_fingerprint_mode, "session");
+}
+
+function testSub2apiRejectsMismatchedAccountIdentity() {
+  const { elements } = loadPageScript();
+  const input = elements.get("#session-input");
+  const output = elements.get("#output");
+  input.value = JSON.stringify({
+    tokens: {
+      access_token: jwtWithPayload({
+        exp: 1_780_000_000,
+        "https://api.openai.com/auth": { chatgpt_account_id: "token-account" },
+      }),
+      refresh_token: "refresh-token",
+      account_id: "stored-account",
+    },
+  });
+  dispatch(input, "input");
+  assert.equal(output.value, "");
+  assert.match(elements.get("#input-status").textContent, /account_id 不一致/);
 }
 
 function testSub2apiOutputConfigurationOverridesImportedAccount() {
@@ -319,7 +379,7 @@ function testSub2apiAccountsUseTheirOwnAccessTokenExpiry() {
   assert.equal(document.accounts[1].auto_pause_on_expired, true);
 }
 
-function testSub2apiAccountWithRefreshTokenOmitsAccessTokenExpiry() {
+function testSub2apiAccountWithRefreshTokenKeepsCredentialExpiry() {
   const { elements } = loadPageScript();
   const input = elements.get("#session-input");
   const output = elements.get("#output");
@@ -345,7 +405,7 @@ function testSub2apiAccountWithRefreshTokenOmitsAccessTokenExpiry() {
 
   assert.equal(account.expires_at, undefined);
   assert.equal(account.auto_pause_on_expired, undefined);
-  assert.equal(account.credentials.expires_at, undefined);
+  assert.equal(account.credentials.expires_at, "2026-06-03T08:06:00Z");
   assert.equal(account.credentials.expires_in, undefined);
   assert.equal(account.credentials.refresh_token, 'real-refresh-token');
   assert.equal(account.credentials.id_token, 'real.id.signature');
@@ -1072,13 +1132,15 @@ async function testTeamPlusProUsageFiltersDoNotRequireFiveHourWindow() {
 }
 
 async function main() {
-  testRefreshTokenAlwaysUsesCodexCliClientId();
+  testSub2apiRefreshTokenUsesIssuingClientId();
+  testSub2apiDoesNotMixDifferentOAuthTokenBundles();
   testSub2apiAccountUsesAccessTokenExpiry();
   testSub2apiOutputConfigurationOverridesImportedAccount();
   testSub2apiLoadFactorUsesSchedulerFieldNotBillingMultiplier();
   testSub2apiAccountParametersSynchronizeBothDirections();
   testSub2apiAccountsUseTheirOwnAccessTokenExpiry();
-  testSub2apiAccountWithRefreshTokenOmitsAccessTokenExpiry();
+  testSub2apiAccountWithRefreshTokenKeepsCredentialExpiry();
+  testSub2apiRejectsMismatchedAccountIdentity();
   testSyntheticIdTokenHasCodexParseableJwtFormat();
   testCodexAuthJsonMatchesNativeShapeWhenMissingRefreshToken();
   testCodexAuthJsonPreservesRealRefreshTokenAndIdToken();

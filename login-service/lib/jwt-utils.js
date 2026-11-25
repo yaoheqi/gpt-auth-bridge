@@ -40,8 +40,19 @@ export function parseExpiredTime(value) {
 export function resolveOrganizationId(idClaims, accessClaims) {
   const idAuth = getNestedRecord(idClaims, 'https://api.openai.com/auth');
   const accessAuth = getNestedRecord(accessClaims, 'https://api.openai.com/auth');
-  const organizations = [idAuth.organizations, accessAuth.organizations].find(Array.isArray);
-  if (!Array.isArray(organizations) || !organizations.length) return '';
-  const first = organizations[0];
-  return first && typeof first === 'object' && !Array.isArray(first) ? firstNonEmpty(first.id) : '';
+  const poid = firstNonEmpty(idAuth.poid, accessAuth.poid);
+  if (poid) return poid;
+  const organizationLists = [idAuth.organizations, accessAuth.organizations].filter(Array.isArray);
+  for (const organizations of organizationLists) {
+    const selected = organizations.find(item => item && typeof item === 'object' && !Array.isArray(item)
+      && (item.is_default === true || item.isDefault === true));
+    const id = firstNonEmpty(selected?.id);
+    if (id) return id;
+  }
+  for (const organizations of organizationLists) {
+    const first = organizations[0];
+    const id = first && typeof first === 'object' && !Array.isArray(first) ? firstNonEmpty(first.id) : '';
+    if (id) return id;
+  }
+  return '';
 }

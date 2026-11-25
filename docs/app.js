@@ -388,6 +388,44 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     return undefined;
   }
 
+  function resolveOAuthTokenBundle(record) {
+    const sources = [
+      {
+        accessToken: firstNonEmpty(record.accessToken, record.access_token),
+        refreshToken: firstNonEmpty(record.refreshToken, record.refresh_token),
+        idToken: firstNonEmpty(record.idToken, record.id_token),
+        clientId: firstNonEmpty(record.oauth_provenance?.client_id, record.clientId, record.client_id),
+      },
+      {
+        accessToken: firstNonEmpty(record.tokens?.accessToken, record.tokens?.access_token),
+        refreshToken: firstNonEmpty(record.tokens?.refreshToken, record.tokens?.refresh_token),
+        idToken: firstNonEmpty(record.tokens?.idToken, record.tokens?.id_token),
+        clientId: firstNonEmpty(record.tokens?.oauth_provenance?.client_id, record.tokens?.clientId, record.tokens?.client_id),
+      },
+      {
+        accessToken: firstNonEmpty(record.token?.accessToken, record.token?.access_token),
+        refreshToken: firstNonEmpty(record.token?.refreshToken, record.token?.refresh_token),
+        idToken: firstNonEmpty(record.token?.idToken, record.token?.id_token),
+        clientId: firstNonEmpty(record.token?.oauth_provenance?.client_id, record.token?.clientId, record.token?.client_id),
+      },
+      {
+        accessToken: firstNonEmpty(record.credentials?.accessToken, record.credentials?.access_token),
+        refreshToken: firstNonEmpty(record.credentials?.refreshToken, record.credentials?.refresh_token),
+        idToken: firstNonEmpty(record.credentials?.idToken, record.credentials?.id_token),
+        clientId: firstNonEmpty(record.credentials?.oauth_provenance?.client_id, record.credentials?.clientId, record.credentials?.client_id),
+      },
+    ];
+    const selected = sources.find(source => source.accessToken);
+    if (!selected) return {};
+    const compatible = sources.filter(source => source.accessToken === selected.accessToken);
+    return {
+      accessToken: selected.accessToken,
+      refreshToken: firstNonEmpty(...compatible.map(source => source.refreshToken)),
+      idToken: firstNonEmpty(...compatible.map(source => source.idToken)),
+      clientId: firstNonEmpty(...compatible.map(source => source.clientId)),
+    };
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -469,6 +507,11 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
 
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+
+  function normalizeRfc3339Seconds(value) {
+    const normalized = normalizeTimestamp(value);
+    return normalized?.replace(/\.\d{3}Z$/, "Z");
   }
 
   function timestampFromUnixSeconds(value) {
@@ -1008,16 +1051,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       throw new Error("session 不是 JSON 对象");
     }
 
-    const accessToken = firstNonEmpty(
-      record.accessToken,
-      record.access_token,
-      record.tokens?.accessToken,
-      record.tokens?.access_token,
-      record.token?.accessToken,
-      record.token?.access_token,
-      record.credentials?.accessToken,
-      record.credentials?.access_token,
-    );
+    const oauthTokens = resolveOAuthTokenBundle(record);
+    const accessToken = oauthTokens.accessToken;
     if (!accessToken) {
       throw new Error("缺少 accessToken");
     }
@@ -1030,24 +1065,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       record.token?.session_token,
       record.credentials?.session_token,
     );
-    const refreshToken = firstNonEmpty(
-      record.refreshToken,
-      record.refresh_token,
-      record.tokens?.refreshToken,
-      record.tokens?.refresh_token,
-      record.token?.refreshToken,
-      record.token?.refresh_token,
-      record.credentials?.refresh_token,
-    );
-    const inputIdToken = firstNonEmpty(
-      record.idToken,
-      record.id_token,
-      record.tokens?.idToken,
-      record.tokens?.id_token,
-      record.token?.idToken,
-      record.token?.id_token,
-      record.credentials?.id_token,
-    );
+    const refreshToken = oauthTokens.refreshToken;
+    const inputIdToken = oauthTokens.idToken;
 
     const payload = parseJwtPayload(accessToken);
     const idPayload = parseJwtPayload(inputIdToken);
@@ -1056,13 +1075,31 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const profile = getOpenAIProfileSection(payload);
     const hasRefreshToken = Boolean(refreshToken);
     const rtClient = hasRefreshToken ? { client_id: "app_EMoamEEZ73f0CkXaXp7hrann" } : {};
-    const accessTokenExpiresAt = hasRefreshToken ? undefined : unixSecondsFromJwtExp(payload?.exp);
+    const sub2apiClient = hasRefreshToken ? {
+      client_id: firstNonEmpty(
+        oauthTokens.clientId,
+        payload?.client_id,
+        payload?.azp,
+        "app_EMoamEEZ73f0CkXaXp7hrann",
+      ),
+    } : {};
+    const sub2apiExpiresAtEpoch = unixSecondsFromJwtExp(payload?.exp) || epochSecondsFromValue(firstNonEmpty(
+      record.expires,
+      record.expiresAt,
+      record.expired,
+      record.expires_at,
+      record.credentials?.expires_at,
+    ));
+    const accessTokenExpiresAt = hasRefreshToken ? undefined : (sub2apiExpiresAtEpoch || undefined);
     const expiresAt = hasRefreshToken ? undefined : firstNonEmpty(
       payload ? timestampFromUnixSeconds(payload.exp) : undefined,
       normalizeTimestamp(record.expires),
       normalizeTimestamp(record.expiresAt),
       normalizeTimestamp(record.expired),
       normalizeTimestamp(record.expires_at),
+    );
+    const sub2apiExpiresAt = normalizeRfc3339Seconds(
+      sub2apiExpiresAtEpoch ? timestampFromUnixSeconds(sub2apiExpiresAtEpoch) : undefined,
     );
     const email = firstNonEmpty(
       record.user?.email,
@@ -1107,6 +1144,31 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       auth.chatgpt_account_id,
       idAuth.chatgpt_account_id,
     );
+    const sub2apiAccountIds = [...new Set([
+      record.account?.id,
+      record.account_id,
+      record.tokens?.accountId,
+      record.tokens?.account_id,
+      record.chatgptAccountId,
+      record.chatgpt_account_id,
+      record.meta?.chatgptAccountId,
+      record.meta?.chatgpt_account_id,
+      record.tokens?.chatgptAccountId,
+      record.tokens?.chatgpt_account_id,
+      record.providerSpecificData?.chatgptAccountId,
+      record.providerSpecificData?.chatgpt_account_id,
+      record.credentials?.chatgpt_account_id,
+      record.credentials?.account_id,
+      auth.chatgpt_account_id,
+      auth.account_id,
+      idAuth.chatgpt_account_id,
+      idAuth.account_id,
+      record.provider === "codex" ? record.id : undefined,
+    ].map(value => firstNonEmpty(value)).filter(Boolean))];
+    const sub2apiAccountId = sub2apiAccountIds[0];
+    const sub2apiValidationError = sub2apiAccountIds.length > 1
+      ? "OpenAI token account_id 不一致"
+      : "";
     const workspaceId = firstNonEmpty(
       record.account?.workspaceId,
       record.account?.workspace_id,
@@ -1141,6 +1203,19 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       record.credentials?.plan_type,
       auth.chatgpt_plan_type,
       idAuth.chatgpt_plan_type,
+    );
+    const organizationSections = [idAuth, auth];
+    const organizations = organizationSections
+      .flatMap(section => Array.isArray(section.organizations) ? section.organizations : [])
+      .filter(isPlainObject);
+    const defaultOrganization = organizations
+      .find(organization => organization.is_default === true || organization.isDefault === true);
+    const organizationId = firstNonEmpty(
+      record.credentials?.organization_id,
+      idAuth.poid,
+      auth.poid,
+      defaultOrganization?.id,
+      organizations[0]?.id,
     );
     const exportedAt = normalizeTimestamp(options.now || new Date());
     const expiresIn = getExpiresIn(expiresAt, options.now || new Date());
@@ -1194,14 +1269,14 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       priority: 1,
       credentials: {
         access_token: accessToken,
-        ...rtClient,
+        ...sub2apiClient,
         refresh_token: refreshToken,
         id_token: inputIdToken,
-        chatgpt_account_id: accountId,
+        chatgpt_account_id: sub2apiAccountId,
         chatgpt_user_id: userId,
         email,
-        expires_at: expiresAt,
-        expires_in: expiresIn,
+        expires_at: sub2apiExpiresAt,
+        organization_id: organizationId,
         plan_type: planType,
         model_mapping: {
           "gpt-5.5": "gpt-5.5",
@@ -1305,14 +1380,24 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       axonHub,
       codexManager,
       sub2apiAccount,
+      sub2apiValidationError,
     };
   }
 
   function buildSub2apiDocument(converted, now = new Date()) {
+    const accounts = converted.map((item, index) => {
+      if (item.sub2apiValidationError) {
+        throw new Error(`第 ${index + 1} 个 Sub2API 账号：${item.sub2apiValidationError}`);
+      }
+      const account = applySub2apiOutputConfig(item.sub2apiAccount);
+      return account;
+    });
     return {
+      type: "sub2api-data",
+      version: 1,
       exported_at: normalizeTimestamp(now),
       proxies: [],
-      accounts: converted.map((item) => applySub2apiOutputConfig(item.sub2apiAccount)),
+      accounts,
     };
   }
 

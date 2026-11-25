@@ -12,8 +12,38 @@ import {
 import { OPENAI_CODEX_CLIENT_ID } from './openai-oauth.js';
 import { sub2ApiAccountDefaults } from './sub2api-settings.js';
 
-export const SUB2API_DEFAULT_EXPIRES_IN = 864000;
 export const SUB2API_SCHEMA_VERSION = 1;
+
+function accountIdFromAuth(auth) {
+  return firstNonEmpty(auth.chatgpt_account_id, auth.account_id);
+}
+
+function assertConsistentAccountIds(...values) {
+  const accountIds = [...new Set(values.map(value => firstNonEmpty(value)).filter(Boolean))];
+  if (accountIds.length > 1) throw new Error('OpenAI token account_id 不一致');
+  return accountIds[0] || '';
+}
+
+function formatRfc3339Seconds(epochSeconds) {
+  const numeric = Number(epochSeconds);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const date = new Date(Math.trunc(numeric) * 1000);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function resolveOAuthClientId(record, accessClaims, hasRefreshToken) {
+  if (!hasRefreshToken) return '';
+  const provenance = record?.oauth_provenance && typeof record.oauth_provenance === 'object'
+    && !Array.isArray(record.oauth_provenance) ? record.oauth_provenance : null;
+  const provenanceClientId = firstNonEmpty(provenance?.client_id);
+  return firstNonEmpty(
+    provenanceClientId,
+    record?.client_id,
+    accessClaims.client_id,
+    accessClaims.azp,
+    OPENAI_CODEX_CLIENT_ID,
+  );
+}
 
 function resolveAccountDefaults(settings = {}) {
   const envDefaults = {
@@ -61,12 +91,34 @@ export function buildSub2ApiAccount(record, settings = {}) {
   const accessAuth = getNestedRecord(accessClaims, 'https://api.openai.com/auth');
   const idAuth = getNestedRecord(idClaims, 'https://api.openai.com/auth');
   const accessProfile = getNestedRecord(accessClaims, 'https://api.openai.com/profile');
-  const expiresAt = parseExpiredTime(record.expired) || Number(accessClaims.exp || 0);
-  const issuedAt = Number(accessClaims.iat || 0);
-  const expiresIn = expiresAt && issuedAt ? Math.max(expiresAt - issuedAt, 0) : SUB2API_DEFAULT_EXPIRES_IN;
+  const expiresAt = Number(accessClaims.exp || 0)
+    || parseExpiredTime(record.expired)
+    || parseExpiredTime(record.expires_at)
+    || parseExpiredTime(record.expiresAt);
+  const credentialExpiresAt = formatRfc3339Seconds(expiresAt);
   const email = firstNonEmpty(record.email, accessProfile.email, idClaims.email, accessClaims.email);
-  const accountId = firstNonEmpty(record.account_id, accessAuth.chatgpt_account_id, idAuth.chatgpt_account_id);
+  const accountId = assertConsistentAccountIds(
+    record.account_id,
+    record.chatgpt_account_id,
+    accountIdFromAuth(accessAuth),
+    accountIdFromAuth(idAuth),
+  );
   const planType = firstNonEmpty(record.plan_type, accessAuth.chatgpt_plan_type, idAuth.chatgpt_plan_type, 'free');
+  const refreshToken = String(record.refresh_token || '').trim();
+  const idToken = String(record.id_token || '').trim();
+  const clientId = resolveOAuthClientId(record, accessClaims, Boolean(refreshToken));
+  const userId = firstNonEmpty(
+    accessAuth.chatgpt_user_id,
+    accessAuth.user_id,
+    idAuth.chatgpt_user_id,
+    idAuth.user_id,
+    accessClaims.sub,
+    idClaims.sub,
+  );
+  const organizationId = resolveOrganizationId(idClaims, accessClaims);
+  if (!refreshToken && !credentialExpiresAt) {
+    throw new Error('access-token-only Sub2API 账号缺少过期时间');
+  }
 
   return {
     name: email || `openai-${Date.now()}`,
@@ -74,17 +126,15 @@ export function buildSub2ApiAccount(record, settings = {}) {
     type: 'oauth',
     credentials: {
       access_token: String(record.access_token || ''),
-      ...(record.refresh_token ? { client_id: OPENAI_CODEX_CLIENT_ID } : {}),
-      refresh_token: String(record.refresh_token || ''),
-      id_token: String(record.id_token || ''),
-      chatgpt_account_id: accountId,
-      account_id: accountId,
-      chatgpt_user_id: firstNonEmpty(accessAuth.chatgpt_user_id, accessAuth.user_id, accessClaims.sub),
-      email,
-      expires_at: expiresAt,
-      expires_in: expiresIn,
-      organization_id: resolveOrganizationId(idClaims, accessClaims),
-      plan_type: planType,
+      ...(clientId ? { client_id: clientId } : {}),
+      ...(refreshToken ? { refresh_token: refreshToken } : {}),
+      ...(idToken ? { id_token: idToken } : {}),
+      ...(accountId ? { chatgpt_account_id: accountId } : {}),
+      ...(userId ? { chatgpt_user_id: userId } : {}),
+      ...(email ? { email } : {}),
+      ...(credentialExpiresAt ? { expires_at: credentialExpiresAt } : {}),
+      ...(organizationId ? { organization_id: organizationId } : {}),
+      ...(planType ? { plan_type: planType } : {}),
       model_mapping: { ...defaults.modelMapping },
     },
     extra: { email, source: String(record?.extra?.source || record?.source || 'codex-sms-auth'), codex_fingerprint_mode: defaults.fingerprintMode, ...(record?.extra?.workspace_id ? { workspace_id: String(record.extra.workspace_id) } : {}) },
@@ -92,7 +142,7 @@ export function buildSub2ApiAccount(record, settings = {}) {
     priority: defaults.priority,
     load_factor: defaults.loadFactor,
     rate_multiplier: defaults.rateMultiplier,
-    auto_pause_on_expired: true,
+    ...(!refreshToken && credentialExpiresAt ? { expires_at: Math.trunc(expiresAt), auto_pause_on_expired: true } : {}),
   };
 }
 
