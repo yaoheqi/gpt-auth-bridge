@@ -157,7 +157,7 @@ export class Sub2ApiClient {
     if (!matches.length) return { status: 'failed', retryable: true, code: 'REMOTE_NOT_FOUND', error: '已确认所选分组中不存在该账号，可以重试' };
     if (matches.length > 1) return { status: 'unknown', retryable: false, code: 'REMOTE_AMBIGUOUS', error: '目标分组存在重复账号，请先在目标服务核对' };
     const row = matches[0];
-    const tokenFields = ['access_token', 'refresh_token', 'id_token'];
+    const tokenFields = ['access_token', 'refresh_token', 'id_token', 'client_id'];
     const matchesCredentials = tokenFields.every(field => !account.credentials[field] || row.credentials?.[field] === account.credentials[field]);
     const matchesProxy = !Object.hasOwn(account, 'proxy_id') || Number(row.proxy_id) === Number(account.proxy_id);
     const matchesSettings = credentialsOnly || (['concurrency', 'priority', 'load_factor'].every(field =>
@@ -176,7 +176,7 @@ export class Sub2ApiClient {
       const row = matches[0];
       if (!Number.isSafeInteger(row.id) || row.id < 1) throw new Sub2ApiError('远端账号 ID 无效');
       // Preserve routing, grouping, scheduling and operator settings on existing accounts.
-      const fields = ['access_token', 'refresh_token', 'id_token', 'chatgpt_account_id', 'account_id', 'chatgpt_user_id', 'email', 'expires_at', 'expires_in', 'organization_id', 'plan_type'];
+      const fields = ['access_token', 'refresh_token', 'id_token', 'client_id', 'chatgpt_account_id', 'account_id', 'chatgpt_user_id', 'email', 'expires_at', 'expires_in', 'organization_id', 'plan_type'];
       const refreshed = Object.fromEntries(fields.filter(key => Object.hasOwn(account.credentials, key)).map(key => [key, account.credentials[key]]));
       await this.request('PUT', `accounts/${row.id}`, { credentials: { ...row.credentials, ...refreshed },
         ...(Object.hasOwn(account, 'proxy_id') ? { proxy_id: account.proxy_id } : {}) });

@@ -27,6 +27,7 @@ test('monitor updates the exact email/workspace within selected groups and prese
   const calls = [];
   const input = sub2Account('a@example.com');
   Object.assign(input, { concurrency: 23, load_factor: 2500, priority: 7, extra: { codex_fingerprint_mode: 'full' } });
+  input.credentials.client_id = 'expected-oauth-client';
   input.credentials.model_mapping = { fixture: 'fixture' };
   input.credentials.chatgpt_account_id = 'team';
   const push = await fixture(t, async (url, options) => {
@@ -38,7 +39,7 @@ test('monitor updates the exact email/workspace within selected groups and prese
         { id: 1, platform: 'openai', type: 'oauth', group_ids: [7], credentials: { email: 'other@example.com', chatgpt_account_id: 'team' } },
         { id: 2, platform: 'openai', type: 'oauth', group_ids: [8], credentials: input.credentials },
         { id: 3, name: 'renamed-by-operator', platform: 'openai', type: 'oauth', group_ids: [7], concurrency: 3, load_factor: 5, priority: 1,
-          extra: { codex_fingerprint_mode: 'off' }, credentials: { ...input.credentials, model_mapping: { old: 'old' }, preserved: true } },
+          extra: { codex_fingerprint_mode: 'off' }, credentials: { ...input.credentials, client_id: 'stale-oauth-client', model_mapping: { old: 'old' }, preserved: true } },
       ] } });
     }
     assert.equal(url, 'https://sub2.test/api/v1/admin/accounts/3');
@@ -132,6 +133,30 @@ test('Sub2API reconciliation checks account parameters while renewal preserves r
     ...account.credentials, model_mapping: { 'fixture-b': 'fixture-b', 'fixture-a': 'fixture-a' },
   } };
   assert.equal((await push('sub2api/reconcile', body)).body.imported, 1);
+});
+
+test('Sub2API reconciliation treats OAuth client mismatch as an unconfirmed credential version', async t => {
+  const account = sub2Account('fixture@example.com');
+  account.credentials.chatgpt_account_id = 'fixture-workspace';
+  account.credentials.client_id = 'expected-oauth-client';
+  const row = {
+    ...structuredClone(account),
+    id: 123,
+    group_ids: [7],
+    credentials: { ...account.credentials, client_id: 'stale-oauth-client' },
+  };
+  const push = await fixture(t, async (_url, options) => {
+    assert.equal(options.method, 'GET');
+    return Response.json({ code: 0, data: { total: 1, items: [row] } });
+  });
+  const { body } = await push('sub2api/reconcile', {
+    settings: { baseUrl: 'https://sub2.test', adminApiKey: 'key', groupIds: [7] },
+    accounts: [account],
+  });
+  assert.equal(body.imported, 0);
+  assert.equal(body.unknown, 1);
+  assert.equal(body.results[0].code, 'REMOTE_VERSION_UNCONFIRMED');
+  assert.equal(body.results[0].retryable, false);
 });
 
 test('Sub2API unrecognized success response is unconfirmed, never counted as imported', async t => {
