@@ -8,10 +8,14 @@ import {
   decodeJwtPayload as defaultDecodeJwtPayload,
   firstNonEmpty as defaultFirstNonEmpty,
   getNestedRecord as defaultGetNestedRecord,
+  parseExpiredTime as defaultParseExpiredTime,
 } from '../../../lib/jwt-utils.js';
 import { isAgentIdentityRecord as defaultIsAgentIdentityRecord } from '../../../lib/openai-agent-identity.js';
 import { normalizeStorageStateJson as defaultNormalizeStorageStateJson } from '../../../lib/session-reuse.js';
-import { nowIso as defaultNowIso } from './auth-records.js';
+import {
+  nowIso as defaultNowIso,
+  validateOpenAIIdTokenAccount as defaultValidateOpenAIIdTokenAccount,
+} from './auth-records.js';
 import { reconcileSessionPlanTypes as defaultReconcileSessionPlanTypes } from '../account-session-reconciliation.js';
 import { resolveSessionPlanType as defaultResolveSessionPlanType } from '../../domain/accounts/account-domain.js';
 import { validateBusinessAuthRecord as defaultValidateBusinessAuthRecord } from '../../../lib/business-workspace.js';
@@ -29,9 +33,11 @@ export function createAuthStateService({
   normalizeOpenAiStage = defaultNormalizeOpenAiStage,
   normalizeStorageStateJson = defaultNormalizeStorageStateJson,
   nowIso = defaultNowIso,
+  parseExpiredTime = defaultParseExpiredTime,
   reconcileSessionPlanTypes = defaultReconcileSessionPlanTypes,
   resolveSessionPlanType = defaultResolveSessionPlanType,
   stageStatusLabel = defaultStageStatusLabel,
+  validateOpenAIIdTokenAccount = defaultValidateOpenAIIdTokenAccount,
   validateBusinessAuthRecord = defaultValidateBusinessAuthRecord,
 } = {}) {
   async function persistOpenAIAuthResult(accountId, record, phoneMode = 'sms') {
@@ -43,17 +49,32 @@ export function createAuthStateService({
     const refreshToken = String(record.refresh_token || '').trim();
     if (!refreshToken) return;
     const accessToken = String(record.access_token || '').trim();
+    const idToken = String(record.id_token || '').trim();
     const accessClaims = decodeJwtPayload(accessToken);
     const accessAuth = getNestedRecord(accessClaims, 'https://api.openai.com/auth');
-    await accountRepository.updateById(accountId, {
-      openai_rt: refreshToken,
-      openai_access_token: accessToken,
-      openai_id_token: String(record.id_token || '').trim(),
-      openai_account_id: firstNonEmpty(record.account_id, accessAuth.chatgpt_account_id, accessAuth.account_id),
-      openai_token_expires_at: Number(accessClaims.exp || 0),
-      openai_stage: OPENAI_STAGES.RT_READY,
-      last_error: '',
-      status: phoneMode === 'sms' ? 'Codex接码成功' : 'RT已刷新',
+    const recordAccountId = firstNonEmpty(record.account_id);
+    const tokenAccountId = firstNonEmpty(accessAuth.chatgpt_account_id, accessAuth.account_id);
+    if (recordAccountId && tokenAccountId && recordAccountId !== tokenAccountId) {
+      throw new Error('OpenAI token account_id 不一致');
+    }
+    const openAIAccountId = firstNonEmpty(tokenAccountId, recordAccountId);
+    const tokenExpiresAt = Number(accessClaims.exp || 0) || parseExpiredTime(record.expired);
+    await accountRepository.updateById(accountId, latest => {
+      const effectiveIdToken = validateOpenAIIdTokenAccount(
+        idToken || String(latest?.openai_id_token || '').trim(),
+        openAIAccountId,
+        idToken ? 'id_token' : '已保存 id_token',
+      );
+      return {
+        openai_rt: refreshToken,
+        openai_access_token: accessToken,
+        openai_id_token: effectiveIdToken,
+        openai_account_id: openAIAccountId,
+        openai_token_expires_at: tokenExpiresAt,
+        openai_stage: OPENAI_STAGES.RT_READY,
+        last_error: '',
+        status: phoneMode === 'sms' ? 'Codex接码成功' : 'RT已刷新',
+      };
     });
   }
 

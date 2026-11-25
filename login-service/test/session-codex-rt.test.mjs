@@ -33,6 +33,7 @@ function jwt(payload) {
 
 function accountWithRt(overrides = {}) {
   const exp = Math.floor(Date.now() / 1000) + 3600;
+  const openaiAccountId = overrides.openai_account_id || 'acct_1';
   return {
     id: 'acc-1',
     email: 'ready@icloud.com',
@@ -44,10 +45,10 @@ function accountWithRt(overrides = {}) {
       iat: exp - 60,
       client_id: OPENAI_CODEX_CLIENT_ID,
       sub: 'user-1',
-      'https://api.openai.com/auth': { chatgpt_account_id: 'acct_1' },
+      'https://api.openai.com/auth': { chatgpt_account_id: openaiAccountId },
     }),
     openai_id_token: 'id-token',
-    openai_account_id: 'acct_1',
+    openai_account_id: openaiAccountId,
     openai_token_expires_at: exp,
     openai_password: 'SecretPass1!',
     ...overrides,

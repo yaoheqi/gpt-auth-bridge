@@ -28,7 +28,11 @@ export function firstNonEmpty(...values) {
 export function parseExpiredTime(value) {
   const text = String(value || '').trim();
   if (!text) return 0;
-  const normalized = text.endsWith('Z') ? text : `${text}Z`;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.floor(numeric > 1e11 ? numeric / 1000 : numeric);
+  }
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text) ? text : `${text}Z`;
   const timestamp = Date.parse(normalized);
   return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : 0;
 }

@@ -1,4 +1,5 @@
 import {
+  OPENAI_CODEX_ORIGINATOR as defaultOPENAI_CODEX_ORIGINATOR,
   OPENAI_CODEX_USER_AGENT as defaultOPENAI_CODEX_USER_AGENT,
   buildRefreshTokenBody as defaultBuildRefreshTokenBody,
 } from '../../../lib/openai-oauth.js';
@@ -16,9 +17,24 @@ import {
 } from '../../../lib/openai-agent-identity.js';
 import { normalizeOpenAIRecordFromRefreshPayload as defaultNormalizeOpenAIRecordFromRefreshPayload } from './auth-records.js';
 
+function safeTokenEndpoint(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return 'configured-token-endpoint';
+  }
+}
+
+function safeOAuthErrorCode(payload) {
+  const code = String(payload?.error || '').trim();
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'unknown_error';
+}
+
 /** Request-owned operations. Configuration and repositories are supplied by the composition root. */
 export function createCredentialExportService({
   AUTH_OAUTH_TOKEN_URLS,
+  OPENAI_CODEX_ORIGINATOR = defaultOPENAI_CODEX_ORIGINATOR,
   OPENAI_CODEX_USER_AGENT = defaultOPENAI_CODEX_USER_AGENT,
   assertSub2ApiAccountShape = defaultAssertSub2ApiAccountShape,
   buildExportFileName,
@@ -87,23 +103,45 @@ export function createCredentialExportService({
     if (!rt) throw new Error('该邮箱尚未导入 OpenAI rttoken');
     let lastError = '';
     for (const tokenURL of AUTH_OAUTH_TOKEN_URLS) {
-      const response = await fetch(tokenURL, {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/x-www-form-urlencoded',
-          'user-agent': OPENAI_CODEX_USER_AGENT,
-        },
-        body: buildRefreshTokenBody(rt),
-      });
-      const text = await response.text();
+      let response;
+      try {
+        response = await fetch(tokenURL, {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/x-www-form-urlencoded',
+            originator: OPENAI_CODEX_ORIGINATOR,
+            'user-agent': OPENAI_CODEX_USER_AGENT,
+          },
+          body: buildRefreshTokenBody(rt),
+        });
+      } catch {
+        lastError = `endpoint=${safeTokenEndpoint(tokenURL)} network_error`;
+        logger?.(`OpenAI RT 刷新失败: ${lastError}`, 'warn');
+        continue;
+      }
+      let text = '';
+      try {
+        text = await response.text();
+      } catch {
+        lastError = `endpoint=${safeTokenEndpoint(tokenURL)} HTTP ${response.status} error=invalid_response`;
+        logger?.(`OpenAI RT 刷新失败: ${lastError}`, 'warn');
+        continue;
+      }
       let payload;
       try { payload = JSON.parse(text); } catch { payload = {}; }
       if (response.ok && payload.access_token) {
-        logger?.(`OpenAI RT 刷新成功: ${tokenURL}`);
-        return normalizeOpenAIRecordFromRefreshPayload(account.email, payload, rt);
+        logger?.(`OpenAI RT 刷新成功: ${safeTokenEndpoint(tokenURL)}`);
+        return normalizeOpenAIRecordFromRefreshPayload(
+          account.email,
+          payload,
+          rt,
+          String(account?.openai_id_token || ''),
+        );
       }
-      lastError = `endpoint=${tokenURL} HTTP ${response.status} ${text.slice(0, 300)}`;
+      // OAuth error bodies can echo submitted credentials. Keep only reviewed
+      // metadata in logs and user-facing failures.
+      lastError = `endpoint=${safeTokenEndpoint(tokenURL)} HTTP ${response.status} error=${safeOAuthErrorCode(payload)}`;
       logger?.(`OpenAI RT 刷新失败: ${lastError}`, 'warn');
     }
     throw new Error(`OpenAI RT 刷新 access_token 失败: ${lastError}`);
