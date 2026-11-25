@@ -144,6 +144,26 @@ function jwtWithPayload(payload) {
   ].join(".");
 }
 
+function testRefreshTokenAlwaysUsesCodexCliClientId() {
+  const { elements } = loadPageScript();
+  const input = elements.get("#session-input");
+  const output = elements.get("#output");
+
+  input.value = JSON.stringify({
+    user: { email: "mark@example.com" },
+    accessToken: jwtWithPayload({
+      azp: "stale-web-client",
+      "https://api.openai.com/auth": { chatgpt_account_id: "chatgpt-account-1" },
+    }),
+    refreshToken: "real-refresh-token",
+    client_id: "stale-imported-client",
+  });
+  dispatch(input, "input");
+
+  const document = JSON.parse(output.value);
+  assert.equal(document.accounts[0].credentials.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
+}
+
 function testSub2apiAccountUsesAccessTokenExpiry() {
   const { elements } = loadPageScript();
   const input = elements.get("#session-input");
@@ -1052,6 +1072,7 @@ async function testTeamPlusProUsageFiltersDoNotRequireFiveHourWindow() {
 }
 
 async function main() {
+  testRefreshTokenAlwaysUsesCodexCliClientId();
   testSub2apiAccountUsesAccessTokenExpiry();
   testSub2apiOutputConfigurationOverridesImportedAccount();
   testSub2apiLoadFactorUsesSchedulerFieldNotBillingMultiplier();

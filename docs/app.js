@@ -1055,7 +1055,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const idAuth = getOpenAIAuthSection(idPayload);
     const profile = getOpenAIProfileSection(payload);
     const hasRefreshToken = Boolean(refreshToken);
-    const rtClient = hasRefreshToken ? { client_id: firstNonEmpty(payload?.client_id, payload?.azp, record.credentials?.client_id, record.tokens?.client_id, record.client_id, "app_EMoamEEZ73f0CkXaXp7hrann") } : {};
+    const rtClient = hasRefreshToken ? { client_id: "app_EMoamEEZ73f0CkXaXp7hrann" } : {};
     const accessTokenExpiresAt = hasRefreshToken ? undefined : unixSecondsFromJwtExp(payload?.exp);
     const expiresAt = hasRefreshToken ? undefined : firstNonEmpty(
       payload ? timestampFromUnixSeconds(payload.exp) : undefined,

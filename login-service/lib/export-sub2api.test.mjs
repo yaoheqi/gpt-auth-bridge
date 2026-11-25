@@ -32,12 +32,14 @@ import {
       'sig',
     ].join('.'),
     refresh_token: 'rt-1',
+    client_id: 'stale-imported-client',
     email: 'a@example.com',
     account_id: 'acc-1',
     expired: new Date(Date.now() + 3600_000).toISOString(),
   });
   assert.equal(assertSub2ApiAccountShape(rt), 'rt');
   assert.equal(rt.credentials.refresh_token, 'rt-1');
+  assert.equal(rt.credentials.client_id, 'app_EMoamEEZ73f0CkXaXp7hrann');
   assert.ok(rt.credentials.access_token);
   assert.equal(rt.credentials.email, 'a@example.com');
   assert.equal(rt.concurrency, 50);
