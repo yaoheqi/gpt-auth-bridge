@@ -115,6 +115,14 @@ export function initializeTeamCheckout({ request = fetch, isWorkspaceCurrent = (
     refresh({ countryChanged: event.target === countryInput });
   });
 
+  document.querySelector('#team-free-preset').addEventListener('click', () => {
+    document.querySelector('#team-price-interval').value = 'month';
+    document.querySelector('#team-seat-quantity').value = '5';
+    document.querySelector('#team-free-campaign').checked = true;
+    countryInput.value = 'auto';
+    countryInput.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (controller || !form.reportValidity()) return;
@@ -122,6 +130,7 @@ export function initializeTeamCheckout({ request = fetch, isWorkspaceCurrent = (
     if (!isCurrent()) return;
     const values = Object.fromEntries(new FormData(form));
     if (values.proxyMode !== 'custom') delete values.proxyUrl;
+    if (values.freeCampaign) values.freeCampaign = true;
     values.seatQuantity = Number(values.seatQuantity);
     const autoOpen = document.querySelector('#team-auto-open').checked;
     clearResult();

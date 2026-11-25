@@ -84,6 +84,10 @@ export function normalizeTeamCheckout(body = {}, { env = process.env } = {}) {
   const currency = automatic ? '' : textField(body.currency ?? 'EGP', '账单货币', 3, true).toUpperCase();
   if (!automatic && (!/^[A-Z]{2}$/.test(country) || !/^[A-Z]{3}$/.test(currency))) throw checkoutError('国家需为两位字母，货币需为三位字母');
   const cancelUrl = new URL('https://chatgpt.com/');
+  const campaignId = 'team-1-month-free';
+  const freeCampaign = body.freeCampaign === true || coupon === campaignId;
+  if (coupon === campaignId) coupon = '';
+  if (freeCampaign) cancelUrl.hash = 'pricing';
   if (coupon) cancelUrl.searchParams.set('promoCode', coupon);
   return {
     accessToken, proxyUrl,
@@ -95,6 +99,10 @@ export function normalizeTeamCheckout(body = {}, { env = process.env } = {}) {
       },
       ...(automatic ? {} : { billing_details: { country, currency } }),
       cancel_url: cancelUrl.href,
+      ...(freeCampaign ? {
+        entry_point: 'team_workspace_purchase_modal',
+        promo_campaign: { promo_campaign_id: campaignId, is_coupon_from_query_param: true },
+      } : {}),
       ...(coupon ? { promo_code: coupon } : {}),
       checkout_ui_mode: 'hosted',
     },
