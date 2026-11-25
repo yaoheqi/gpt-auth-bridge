@@ -1649,6 +1649,10 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
      // fallback classification says that window may be absent.
      const formatWindow = (window, unavailable = false) => unavailable && !window ? "不适用" : (window?.usedPercent == null ? "未知" : `${window.usedPercent}%${window.resetAfterSeconds != null ? `（${formatDuration(window.resetAfterSeconds)} 后）` : ""}`);
      const usage = result?.usage || item.usage;
+     const businessOffer = result?.businessOffer;
+     const businessOfferTitle = businessOffer?.monthlyAmount != null
+       ? `Business 月付金额：${businessOffer.monthlyAmount}${businessOffer?.currency ? ` ${businessOffer.currency}` : ''}${businessOffer?.country ? `；代理出口：${businessOffer.country}` : ''}`
+       : businessOffer?.error || '尚未检测';
 
      return `<tr>
        <td><div class="cell-clip" title="${escapeHtml(item.name)}">${escapeHtml(item.name || "-")}</div></td>
@@ -1657,8 +1661,8 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
        <td>${escapeHtml(formatWindow(usage?.fiveHour, planHasNoFiveHourWindow(usage?.planType)))}</td>
        <td>${escapeHtml(formatWindow(usage?.sevenDay))}</td>
        <td>${Number.isSafeInteger(result?.resetCreditCount) && result.resetCreditCount >= 0 ? result.resetCreditCount : "未知"}</td>
+       <td title="${escapeHtml(businessOfferTitle)}">${businessOffer?.eligible === true ? '有资格' : businessOffer?.eligible === false ? '无资格' : '未知'}</td>
        <td title="${escapeHtml(result?.devicesError || '当前登录设备列表中的设备数量')}"><button type="button" class="device-count" data-device-index="${escapeHtml(String(result?.index ?? ""))}" aria-label="查看 ${escapeHtml(item.name || item.email || '账号')} 的在线设备详情">${Number.isInteger(result?.deviceCount) && result.deviceCount >= 0 ? result.deviceCount : '未知'}</button></td>
-       <td title="${escapeHtml(result?.trial?.error || [result?.trial?.reason, result?.trial?.warning].filter(Boolean).join('；') || '尚未检测')}">${result?.trial?.eligible === true ? '有资格' : result?.trial?.eligible === false ? '无资格' : '未知'}${result?.trial?.country ? `（${escapeHtml(result.trial.country)}）` : ''}</td>
      </tr>`;
    }
 
@@ -1814,7 +1818,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       const response = await pageFetch('/api/session-health', {
         method: 'POST', signal: controller.signal, credentials: 'same-origin',
         headers: loginProxyHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ includeUsage: true, includeResetCredits: true, includeDevices: true, includeTrial: true, concurrency, accounts }),
+        body: JSON.stringify({ includeUsage: true, includeResetCredits: true, includeDevices: true, includeBusinessOffer: true, concurrency, accounts }),
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);

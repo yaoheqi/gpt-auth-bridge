@@ -2,7 +2,7 @@ import { resolveSessionProxy } from '../login-service/lib/proxy-config.js';
 import { createCurlCffiFetch } from '../login-service/lib/curl-cffi-fetch.js';
 import { extractErrorCode } from '../login-service/src/lib/auth-behavior-contract.js';
 import { readLogoutAllResponse } from '../login-service/src/services/logout-all-response.js';
-import { CHATGPT_ACCOUNTS_CHECK_URL, CHATGPT_PLUS_TRIAL_CAMPAIGN, CHATGPT_PLUS_TRIAL_ELIGIBILITY_URL, CHATGPT_CHECKOUT_PRICING_CONFIG_URL } from '../login-service/lib/openai-auth-urls.js';
+import { CHATGPT_CHECKOUT_PRICING_CONFIG_URL } from '../login-service/lib/openai-auth-urls.js';
 import { decodeJwtPayload } from '../login-service/lib/jwt-utils.js';
 
 // A single account operation keeps the same proxy, cookie transport and cleanup.
@@ -21,7 +21,7 @@ export async function withSessionTransport(run, { signal, pool, createFetch = cr
   }
 }
 
-export async function checkSessionHealth(account, { includeUsage = false, includeDevices = false, includeTrial = false, includeResetCredits = false, ...options } = {}) {
+export async function checkSessionHealth(account, { includeUsage = false, includeDevices = false, includeBusinessOffer = false, includeResetCredits = false, ...options } = {}) {
   const hasCookie = Boolean(account?.cookie || account?.cookies || account?.sessionCookie);
   const health = hasCookie ? await probeToken(account, options) : await probeUsage(account, options);
   const queryCredits = includeResetCredits && health.status === 200;
@@ -29,8 +29,8 @@ export async function checkSessionHealth(account, { includeUsage = false, includ
   const usage = includeUsage ? quota : null;
   const resetCreditCount = queryCredits ? (await probeResetCreditCount(account, options) ?? quota.resetCreditCount ?? null) : null;
   const devices = includeDevices && health.status === 200 ? await probeDevices(account, options) : null;
-  const trial = includeTrial && health.status === 200 ? await probePlusTrial(account, options) : null;
-  return { ...health, trial, resetCreditCount, usage: usage?.usage || null, usageStatus: usage?.status ?? null, usageError: usage?.error || '',
+  const businessOffer = includeBusinessOffer && health.status === 200 ? await probeBusinessOffer(account, options) : null;
+  return { ...health, businessOffer, resetCreditCount, usage: usage?.usage || null, usageStatus: usage?.status ?? null, usageError: usage?.error || '',
     devices: devices?.devices ?? null,
     deviceCount: devices?.deviceCount ?? null, devicesStatus: devices?.status ?? null, devicesError: devices?.error || '' };
 }
@@ -42,10 +42,20 @@ const SESSIONS_URL = "https://chatgpt.com/backend-api/accounts/sessions";
 const LOGOUT_ALL_URL = "https://chatgpt.com/backend-api/accounts/logout_all";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36";
 
-export async function probePlusTrial(account, { fetchImpl, signal } = {}) {
+function normalizeBusinessOffer(pricing) {
+  const rawAmount = pricing?.currency_config?.business?.month?.amount;
+  let monthlyAmount = null;
+  if (typeof rawAmount === 'number' && Number.isFinite(rawAmount)) monthlyAmount = rawAmount;
+  else if (typeof rawAmount === 'string' && rawAmount.trim() && Number.isFinite(Number(rawAmount))) monthlyAmount = Number(rawAmount);
+  return {
+    eligible: monthlyAmount === null ? null : monthlyAmount === 0,
+    monthlyAmount,
+    error: monthlyAmount === null ? '定价接口未返回有效的 currency_config.business.month.amount' : '',
+  };
+}
+
+export async function probeBusinessOffer(account, { fetchImpl, signal } = {}) {
   let country = '';
-  const campaign = CHATGPT_PLUS_TRIAL_CAMPAIGN;
-  const errors = [];
   const requestSignal = () => AbortSignal.any([AbortSignal.timeout(20_000), signal].filter(Boolean));
   try {
     if (!String(account?.accessToken || '').trim()) throw new Error('缺少 access token');
@@ -61,46 +71,19 @@ export async function probePlusTrial(account, { fetchImpl, signal } = {}) {
     const auth = claims?.['https://api.openai.com/auth'] || {};
     const accountId = account.accountId || account.chatgptAccountId || auth.chatgpt_account_id || claims?.chatgpt_account_id;
     const probeAccount = { ...account, accountId };
-    const read = async url => {
-      signal?.throwIfAborted();
-      try {
-        const route = new URL(url).pathname;
-        const response = await fetchImpl(url, {
-          headers: { ...buildProbeHeaders(probeAccount, route), Referer: `https://chatgpt.com/?openaicom_referred=true&promo_campaign=${campaign}` },
-          signal: requestSignal(),
-        });
-        if (!response.ok) { await response.body?.cancel(); throw new Error(`${route}: HTTP ${response.status}`); }
-        const payload = await response.json();
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`${route}: 响应无效`);
-        return payload;
-      } catch (error) { errors.push(String(error?.message || error)); return null; }
-    };
-    const accountsCheck = await read(CHATGPT_ACCOUNTS_CHECK_URL);
-    const eligibility = await read(CHATGPT_PLUS_TRIAL_ELIGIBILITY_URL);
-    const pricing = await read(CHATGPT_CHECKOUT_PRICING_CONFIG_URL(country));
-    const accounts = accountsCheck?.accounts || {};
-    // Never borrow another workspace's plan or promotion eligibility.
-    const row = accountId ? accounts[accountId] : (Object.keys(accounts).length === 1 ? Object.values(accounts)[0] : null);
-    const plan = String(row?.account?.plan_type || row?.account?.planType || row?.entitlement?.subscription_plan || auth.chatgpt_plan_type || claims?.chatgpt_plan_type || '').toLowerCase().replace(/^chatgpt/, '').replace(/plan$/, '');
-    const campaigns = row?.account?.eligible_promo_campaigns || row?.eligible_promo_campaigns;
-    const promo = campaigns?.plus || campaigns?.chatgptplusplan || campaigns?.ChatGPTPlus;
-    const promoId = typeof promo === 'string' ? promo : promo?.id || promo?.promo_campaign_id;
-    let eligible = null;
-    let reason = '';
-    if (['plus', 'pro', 'team', 'business', 'enterprise'].includes(plan)) {
-      eligible = false; reason = `already_${plan}`;
-    } else if (typeof eligibility?.is_eligible === 'boolean') {
-      eligible = eligibility.is_eligible;
-      reason = eligible ? 'eligibility_api' : String(eligibility.ineligible_reason?.code || eligibility.ineligible_reason?.message || 'user_not_eligible');
-    } else if (promoId === campaign) {
-      eligible = true; reason = `accounts_check:${promoId}`;
-    }
-    return { eligible, country, campaign, reason, planType: plan,
-      currency: String(pricing?.currency_config?.symbol_code || ''),
-      error: eligible === null ? (errors.join('；') || '资格接口未返回明确结果') : '',
-      warning: errors.join('；') };
+    signal?.throwIfAborted();
+    const url = CHATGPT_CHECKOUT_PRICING_CONFIG_URL(country);
+    const route = new URL(url).pathname;
+    const response = await fetchImpl(url, {
+      headers: buildProbeHeaders(probeAccount, route),
+      signal: requestSignal(),
+    });
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`${route}: HTTP ${response.status}`); }
+    const pricing = await response.json();
+    if (!pricing || typeof pricing !== 'object' || Array.isArray(pricing)) throw new Error(`${route}: 响应无效`);
+    return { ...normalizeBusinessOffer(pricing), country, currency: String(pricing?.currency_config?.symbol_code || '') };
   } catch (error) {
-    return { eligible: null, country, campaign, error: String(error?.message || error).slice(0, 512) };
+    return { eligible: null, monthlyAmount: null, country, currency: '', error: String(error?.message || error).slice(0, 512) };
   }
 }
 

@@ -87,7 +87,8 @@ async function handleHealth(request, response) {
       const account = body.accounts[index];
       signal.throwIfAborted();
       results[index] = { index, ...(await runAccountTask(() => withSessionTransport(options => checkSessionHealth(account, {
-        ...options, includeUsage: body.includeUsage, includeDevices: body.includeDevices, includeTrial: body.includeTrial,
+        ...options, includeUsage: body.includeUsage, includeDevices: body.includeDevices,
+        includeBusinessOffer: body.includeBusinessOffer === true,
         includeResetCredits: body.includeResetCredits === true,
       }), { signal }), { signal })) };
     }

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkSessionHealth, logoutAllSessions, withSessionTransport, probePlusTrial } from '../src/session-network.js';
+import { checkSessionHealth, logoutAllSessions, withSessionTransport, probeBusinessOffer } from '../src/session-network.js';
 
 const account = { accessToken: 'fixture-access-token' };
 const usage = () => Response.json({ rate_limit: { primary_window: { used_percent: 25, limit_window_seconds: 18000 } } });
 
-test('trial uses the selected transport and detected country without leaking credentials to geo lookup', async () => {
+test('business offer uses the selected transport and detected country without Plus trial requests', async () => {
   for (const country of ['US', 'DE', 'JP']) {
     const urls = [];
     let disposed = false;
@@ -17,65 +17,78 @@ test('trial uses the selected transport and detected country without leaking cre
       }
       assert.equal(init.headers.Authorization, `Bearer ${account.accessToken}`);
       if (url.includes('/wham/usage')) return usage();
-      if (url.includes('/accounts/check')) return Response.json({ accounts: { selected: { account: { plan_type: 'free' } } } });
-      if (url.includes('/promotions/')) return Response.json({ is_eligible: true });
       assert.ok(url.endsWith(`/configs/${country}`));
-      return Response.json({ country_code: country });
+      return Response.json({ country_code: country, currency_config: {
+        symbol_code: 'USD', business: { month: { amount: 0 } },
+      } });
     };
     fetchImpl.dispose = async () => { disposed = true; };
-    const result = await withSessionTransport(options => checkSessionHealth({ ...account, accountId: 'selected' }, { ...options, includeTrial: true }), {
+    const result = await withSessionTransport(options => checkSessionHealth({ ...account, accountId: 'selected' }, { ...options, includeBusinessOffer: true }), {
       resolveProxy: () => ({ proxyUrl: 'http://selected-proxy:8080' }),
       createFetch: proxy => { assert.equal(proxy, 'http://selected-proxy:8080'); return fetchImpl; },
     });
-    assert.equal(result.trial.eligible, true);
-    assert.equal(result.trial.country, country);
+    assert.equal(result.businessOffer.eligible, true);
+    assert.equal(result.businessOffer.country, country);
     assert.equal(result.status, 200);
-    assert.equal(urls.length, 5);
+    assert.equal(urls.length, 3);
+    assert.ok(urls.every(url => !url.includes('/accounts/check') && !url.includes('/promotions/')));
     assert.equal(disposed, true);
   }
 });
 
+test('business offer derives a missing account header from the access token', async () => {
+  const accountId = 'account-from-token';
+  const accessToken = `header.${Buffer.from(JSON.stringify({
+    'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+  })).toString('base64url')}.signature`;
+  const result = await probeBusinessOffer({ accessToken }, { fetchImpl: async (url, init) => {
+    if (url.includes('/cdn-cgi/trace')) {
+      assert.deepEqual(init.headers, { Accept: 'text/plain' });
+      return new Response('loc=US\n');
+    }
+    assert.equal(init.headers.Authorization, `Bearer ${accessToken}`);
+    assert.equal(init.headers['chatgpt-account-id'], accountId);
+    return Response.json({ currency_config: { business: { month: { amount: 25 } } } });
+  } });
+  assert.equal(result.eligible, false);
+});
+
 test('unavailable geo lookup never falls back to a fixed country or changes account health', async () => {
   const urls = [];
-  const result = await checkSessionHealth(account, { includeTrial: true, fetchImpl: async url => {
+  const result = await checkSessionHealth(account, { includeBusinessOffer: true, fetchImpl: async url => {
     urls.push(url);
     return url.includes('/wham/usage') ? usage() : new Response('invalid trace');
   } });
   assert.equal(result.status, 200);
-  assert.equal(result.trial.eligible, null);
-  assert.equal(result.trial.country, '');
-  assert.ok(result.trial.error);
+  assert.equal(result.businessOffer.eligible, null);
+  assert.equal(result.businessOffer.country, '');
+  assert.ok(result.businessOffer.error);
   assert.equal(urls.length, 2);
 });
 
-test('trial distinguishes explicit eligibility, paid plans, fallback campaigns and unavailable results', async () => {
-  const campaign = 'plus-1-month-free';
+test('business offer eligibility follows the monthly pricing amount without treating missing values as zero', async () => {
   for (const fixture of [
-    { eligibility: { is_eligible: false }, promo: campaign, expected: false },
-    { eligibility: { is_eligible: true }, plan: 'plus', expected: false },
-    { eligibility: {}, promo: campaign, expected: true },
-    { eligibility: {}, expected: null },
-    { eligibility: null, expected: null },
-    { eligibility: {}, otherPromo: campaign, expected: null },
+    { amount: 0, expected: true, normalizedAmount: 0 },
+    { amount: 25, expected: false, normalizedAmount: 25 },
+    { amount: '0', expected: true, normalizedAmount: 0 },
+    { amount: null, expected: null, normalizedAmount: null },
+    { amount: 'invalid', expected: null, normalizedAmount: null },
+    { missing: true, expected: null, normalizedAmount: null },
   ]) {
-    const result = await probePlusTrial({ ...account, accountId: 'selected' }, { fetchImpl: async url => {
-      if (url.includes('/cdn-cgi/trace')) return new Response('loc=GB\n');
-      if (url.includes('/accounts/check')) return Response.json({ accounts: {
-        selected: { account: { plan_type: fixture.plan || 'free', eligible_promo_campaigns: { plus: fixture.promo } } },
-        other: { account: { eligible_promo_campaigns: { plus: fixture.otherPromo } } },
-      } });
-      if (url.includes('/promotions/')) return fixture.eligibility === null ? new Response('', { status: 403 }) : Response.json(fixture.eligibility);
-      return Response.json({});
+    const result = await probeBusinessOffer({ ...account, accountId: 'selected' }, { fetchImpl: async url => {
+      if (url.includes('/cdn-cgi/trace')) return new Response('loc=US\n');
+      return Response.json({ currency_config: fixture.missing ? {} : { business: { month: { amount: fixture.amount } } } });
     } });
     assert.equal(result.eligible, fixture.expected);
-    if (fixture.expected === null) assert.ok(result.error);
+    assert.equal(result.monthlyAmount, fixture.normalizedAmount);
+    assert.equal(Boolean(result.error), fixture.expected === null);
   }
 });
 
-test('trial is skipped for unhealthy accounts', async () => {
+test('business offer is skipped for unhealthy accounts', async () => {
   let calls = 0;
-  const result = await checkSessionHealth(account, { includeTrial: true, fetchImpl: async () => { calls++; return new Response('', { status: 401 }); } });
-  assert.equal(result.trial, null);
+  const result = await checkSessionHealth(account, { includeBusinessOffer: true, fetchImpl: async () => { calls++; return new Response('', { status: 401 }); } });
+  assert.equal(result.businessOffer, null);
   assert.equal(calls, 1);
 });
 
