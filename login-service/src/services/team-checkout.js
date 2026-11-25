@@ -3,6 +3,11 @@ import { createCurlCffiFetch } from '../../lib/curl-cffi-fetch.js';
 import { checkoutResponseDiagnostics, checkoutNetworkDiagnostics } from './team-checkout-diagnostics.js';
 
 const CHECKOUT_ENDPOINT = 'https://chatgpt.com/backend-api/payments/checkout';
+const REGION_CURRENCIES = new Map(Object.entries({
+  EG: 'EGP', US: 'USD', SE: 'SEK', PH: 'PHP', TH: 'THB', GB: 'GBP', CA: 'CAD',
+  ZA: 'ZAR', AU: 'AUD', JP: 'JPY', SG: 'SGD', KR: 'KRW', BR: 'BRL', IN: 'INR',
+  DE: 'EUR', FR: 'EUR', NL: 'EUR', ES: 'EUR', IT: 'EUR',
+}));
 const CHECKOUT_HOSTS = new Set(['checkout.stripe.com', 'pay.openai.com', 'chatgpt.com']);
 
 function checkoutError(message, status = 400, code = 'INVALID_TEAM_CHECKOUT', diagnostics) {
@@ -74,9 +79,10 @@ export function normalizeTeamCheckout(body = {}, { env = process.env } = {}) {
   if (!Number.isSafeInteger(seatQuantity) || seatQuantity < 2) throw checkoutError('席位数量必须是至少 2 的整数');
   const priceInterval = body.priceInterval ?? 'month';
   if (!['month', 'year'].includes(priceInterval)) throw checkoutError('付款周期必须是 month 或 year');
-  const country = textField(body.country ?? 'EG', '账单国家', 2, true).toUpperCase();
-  const currency = textField(body.currency ?? 'EGP', '账单货币', 3, true).toUpperCase();
-  if (!/^[A-Z]{2}$/.test(country) || !/^[A-Z]{3}$/.test(currency)) throw checkoutError('国家需为两位字母，货币需为三位字母');
+  const automatic = body.country === 'auto';
+  const country = automatic ? '' : textField(body.country ?? 'EG', '账单国家', 2, true).toUpperCase();
+  const currency = automatic ? '' : textField(body.currency ?? 'EGP', '账单货币', 3, true).toUpperCase();
+  if (!automatic && (!/^[A-Z]{2}$/.test(country) || !/^[A-Z]{3}$/.test(currency))) throw checkoutError('国家需为两位字母，货币需为三位字母');
   const cancelUrl = new URL('https://chatgpt.com/');
   if (coupon) cancelUrl.searchParams.set('promoCode', coupon);
   return {
@@ -87,7 +93,7 @@ export function normalizeTeamCheckout(body = {}, { env = process.env } = {}) {
         workspace_name: workspaceName, price_interval: priceInterval, seat_quantity: seatQuantity,
         ...(existingWorkspaceId ? { existing_workspace_id: existingWorkspaceId } : {}),
       },
-      billing_details: { country, currency },
+      ...(automatic ? {} : { billing_details: { country, currency } }),
       cancel_url: cancelUrl.href,
       ...(coupon ? { promo_code: coupon } : {}),
       checkout_ui_mode: 'hosted',
@@ -115,17 +121,31 @@ export async function generateTeamCheckout(input, { fetchImpl, createProxyFetch 
   try {
     signal?.throwIfAborted();
     if (proxyUrl || !fetchImpl) proxyFetch = createProxyFetch(proxyUrl, { direct: !proxyUrl });
-    response = await (proxyFetch || fetchImpl)(CHECKOUT_ENDPOINT, {
+    const request = proxyFetch || fetchImpl;
+    const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    if (!payload.billing_details) {
+      const profile = await request('https://chatgpt.com/backend-api/me', {
+        method: 'GET', headers: { Authorization: `Bearer ${accessToken}` }, redirect: 'manual', signal: requestSignal,
+      });
+      if (profile.status === 401) throw checkoutError('Access Token 已失效，请重新登录获取', 401, 'CHECKOUT_REJECTED');
+      const details = profile.ok ? await profile.json().catch(() => null) : null;
+      const country = typeof details?.country === 'string' ? details.country.trim().toUpperCase() : '';
+      const currency = REGION_CURRENCIES.get(country);
+      if (!currency) throw checkoutError('无法识别账单地区或币种，请手动选择后重试');
+      payload.billing_details = { country, currency };
+    }
+    response = await request(CHECKOUT_ENDPOINT, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload), redirect: 'manual',
-      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      signal: requestSignal,
     });
     responseText = await response.text();
     try { data = JSON.parse(responseText); } catch { data = null; }
   } catch (error) {
     if (signal?.aborted) throw checkoutError('请求已取消', 499, 'CHECKOUT_CANCELLED');
     if (deadline.aborted) throw checkoutError('生成链接超时，请稍后重试', 504, 'CHECKOUT_TIMEOUT');
+    if (error.code === 'INVALID_TEAM_CHECKOUT' || error.code === 'CHECKOUT_REJECTED') throw error;
     const diagnostics = checkoutNetworkDiagnostics(error, diagnosticContext);
     let message = proxyUrl ? '代理连接失败，请检查代理地址、凭据及网络后重试' : '无法连接支付服务，请检查服务器网络后重试';
     if (diagnostics.category === 'tls_error') message = 'TLS 握手失败，请核对代理协议、端口及服务器代理链配置' + (diagnostics.networkCode ? '（' + diagnostics.networkCode + '）' : '');

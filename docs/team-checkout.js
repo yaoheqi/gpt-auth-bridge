@@ -32,19 +32,21 @@ export function initializeTeamCheckout({ request = fetch, isWorkspaceCurrent = (
 
   function refresh({ countryChanged = false } = {}) {
     const region = TEAM_CHECKOUT_REGIONS.find(item => item.country === countryInput.value) || TEAM_CHECKOUT_REGIONS[0];
-    if (countryChanged) currencyInput.value = region.currency;
+    const automatic = countryInput.value === 'auto';
+    currencyInput.disabled = automatic;
+    if (countryChanged) currencyInput.value = automatic ? '' : region.currency;
     const proxyMode = document.querySelector('input[name="proxyMode"]:checked')?.value || 'builtin';
     const custom = proxyMode === 'custom';
     proxyInput.disabled = !custom;
     proxyInput.required = custom;
     document.querySelector('.team-proxy-field').classList.toggle('hidden', !custom);
     document.querySelector('#team-config-proxy').textContent = { builtin: '内置代理', custom: '自定义代理', direct: '服务器直连' }[proxyMode];
-    document.querySelector('#team-config-country').textContent = region.name + '（' + region.country + '）';
+    document.querySelector('#team-config-country').textContent = automatic ? '自动识别' : region.name + '（' + region.country + '）';
     document.querySelector('#team-config-seats').textContent = document.querySelector('#team-seat-quantity').value || '2';
-    document.querySelector('#team-config-currency').textContent = currencyInput.value || region.currency;
+    document.querySelector('#team-config-currency').textContent = automatic ? '随地区确定' : currencyInput.value || region.currency;
     document.querySelector('#team-config-interval').textContent = document.querySelector('#team-price-interval').value === 'year' ? '年付订阅' : '月付订阅';
     document.querySelector('#team-config-workspace').textContent = document.querySelector('#team-existing-workspace').value.trim() ? '已有空间' : '新建空间';
-    for (const regionButton of regionButtons) regionButton.setAttribute('aria-pressed', String(regionButton.dataset.teamCountry === region.country));
+    for (const regionButton of regionButtons) regionButton.setAttribute('aria-pressed', String(regionButton.dataset.teamCountry === countryInput.value));
   }
 
   for (const region of TEAM_CHECKOUT_REGIONS) {
