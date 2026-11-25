@@ -1055,6 +1055,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const idAuth = getOpenAIAuthSection(idPayload);
     const profile = getOpenAIProfileSection(payload);
     const hasRefreshToken = Boolean(refreshToken);
+    const rtClient = hasRefreshToken ? { client_id: firstNonEmpty(payload?.client_id, payload?.azp, record.credentials?.client_id, record.tokens?.client_id, record.client_id, "app_EMoamEEZ73f0CkXaXp7hrann") } : {};
     const accessTokenExpiresAt = hasRefreshToken ? undefined : unixSecondsFromJwtExp(payload?.exp);
     const expiresAt = hasRefreshToken ? undefined : firstNonEmpty(
       payload ? timestampFromUnixSeconds(payload.exp) : undefined,
@@ -1162,6 +1163,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       id_token: idToken,
       id_token_synthetic: Boolean(syntheticIdToken) || undefined,
       access_token: accessToken,
+      ...rtClient,
       refresh_token: refreshToken || "",
       session_token: sessionToken,
       last_refresh: exportedAt,
@@ -1173,6 +1175,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       type: "codex",
       id_token: idToken,
       access_token: accessToken,
+      ...rtClient,
       refresh_token: refreshToken || "",
       account_id: accountId,
       last_refresh: exportedAt,
@@ -1191,6 +1194,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       priority: 1,
       credentials: {
         access_token: accessToken,
+        ...rtClient,
         refresh_token: refreshToken,
         id_token: inputIdToken,
         chatgpt_account_id: accountId,
@@ -1222,6 +1226,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const updatedAt = normalizeTimestamp(record.updatedAt) || exportedAt;
     const nineRouter = stripUnavailable({
       accessToken,
+      ...rtClient,
       refreshToken,
       expiresAt,
       testStatus: firstNonEmpty(record.testStatus, record.test_status, "active"),
@@ -1247,6 +1252,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       tokens: {
         id_token: idToken,
         access_token: accessToken,
+        ...rtClient,
         refresh_token: refreshToken || "",
         account_id: accountId,
       },
@@ -1257,6 +1263,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
       last_refresh: getAxonHubLastRefresh(expiresAt, options.now || new Date()),
       tokens: {
         access_token: accessToken,
+        ...rtClient,
         refresh_token: axonHubRefreshToken,
         id_token: idToken,
       },
@@ -1276,6 +1283,7 @@ import { OPERATION_SCHEMA_VERSION, validatePushResults, validateOperationEvent }
     const codexManager = {
       tokens: {
         access_token: accessToken,
+        ...rtClient,
         refresh_token: refreshToken || "",
         id_token: inputIdToken || "",
         ...codexManagerTokenHints,
