@@ -257,7 +257,7 @@ test('failed health skips the optional device query', async () => {
 });
 
 
-test('device details expose display fields and aggregate current session dates only', async () => {
+test('device details expose display fields without login time fields', async () => {
   const result = await checkSessionHealth(account, { includeDevices: true, fetchImpl: async url =>
     url.endsWith('/accounts/sessions') ? Response.json({ devices: [
       { display_name: 'Computer', platform: 'windows', is_current_device: true,
@@ -270,24 +270,23 @@ test('device details expose display fields and aggregate current session dates o
     ] }) : usage(),
   });
   assert.equal(result.deviceCount, 5);
-  assert.equal(result.firstLoginAt, 1600000000000);
-  assert.equal(result.lastLoginAt, 1800000000000);
-  assert.equal(result.devices[0].createdAt, 1700000000125);
+  assert.equal(Object.hasOwn(result, 'firstLoginAt'), false);
+  assert.equal(Object.hasOwn(result, 'lastLoginAt'), false);
   assert.equal(result.devices[0].location, 'Cypress, TX, US');
   assert.deepEqual(result.devices[0].apps, ['ChatGPT Web', 'Codex']);
   assert.equal(result.devices[0].current, true);
-  assert.equal(result.devices[2].createdAt, null);
-  assert.equal(result.devices[3].lastLoginAt, null);
-  assert.doesNotMatch(JSON.stringify(result), /private-session-id|session_id/);
+  assert.equal(Object.hasOwn(result.devices[0], 'createdAt'), false);
+  assert.equal(Object.hasOwn(result.devices[0], 'lastLoginAt'), false);
+  assert.doesNotMatch(JSON.stringify(result), /private-session-id|session_id|createdAt|lastLoginAt/);
 });
 
-test('empty and unavailable device lists never manufacture login dates', async () => {
+test('empty and unavailable device lists omit aggregate login time fields', async () => {
   for (const payload of [{ devices: [] }, {}, { devices: [{}] }]) {
     const result = await checkSessionHealth(account, { includeDevices: true, fetchImpl: async url =>
       url.endsWith('/accounts/sessions') ? Response.json(payload) : usage(),
     });
-    assert.equal(result.firstLoginAt, null);
-    assert.equal(result.lastLoginAt, null);
+    assert.equal(Object.hasOwn(result, 'firstLoginAt'), false);
+    assert.equal(Object.hasOwn(result, 'lastLoginAt'), false);
     assert.equal(result.deviceCount, payload.devices?.length ?? null);
   }
 });

@@ -646,7 +646,7 @@ async function testAutomaticHealthFilterAndDownloadScope() {
           return {
             concurrency: 30,
             results: [
-              { index: 0, status: 200, error: "", resetCreditCount: 3, deviceCount: 2, firstLoginAt: 1700000000000, lastLoginAt: 1800000000000,
+              { index: 0, status: 200, error: "", resetCreditCount: 3, deviceCount: 2,
                 trial: { eligible: true, country: 'US', reason: '<script>fixture</script>' },
                 devices: [{ apps: ['Codex'], description: 'Computer', platform: 'windows', current: true,
                   location: '<script>city</script>', createdAt: 1700000000000, lastLoginAt: 1800000000000 }] },
@@ -682,14 +682,13 @@ async function testAutomaticHealthFilterAndDownloadScope() {
   assert.doesNotMatch(elements.get("#health-body").innerHTML, /<script>/);
   assert.match(elements.get("#health-body").innerHTML, />2<\/button>/);
   assert.match(elements.get("#health-body").innerHTML, /<td>3<\/td>\s*<td[^>]*><button[^>]*class="device-count"/);
-  assert.match(elements.get("#health-body").innerHTML, /最早：/);
-  assert.match(elements.get("#health-body").innerHTML, /最近：/);
+  assert.doesNotMatch(elements.get("#health-body").innerHTML, /最早：|最近：/);
   elements.get("#health-body").listeners.click({ target: { closest: () => ({ dataset: { deviceIndex: '0' } }) } });
   assert.equal(elements.get('#device-details-dialog').open, true);
   const details = elements.get('#device-details-list').innerHTML;
   assert.match(details, /Codex/);
   assert.match(details, /当前设备/);
-  assert.match(details, /会话创建时间/);
+  assert.doesNotMatch(details, /会话创建时间|最近登录时间/);
   assert.match(details, /&lt;script&gt;city&lt;\/script&gt;/);
   assert.doesNotMatch(details, /<script>/);
 

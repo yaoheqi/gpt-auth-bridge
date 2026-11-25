@@ -31,7 +31,7 @@ export async function checkSessionHealth(account, { includeUsage = false, includ
   const devices = includeDevices && health.status === 200 ? await probeDevices(account, options) : null;
   const trial = includeTrial && health.status === 200 ? await probePlusTrial(account, options) : null;
   return { ...health, trial, resetCreditCount, usage: usage?.usage || null, usageStatus: usage?.status ?? null, usageError: usage?.error || '',
-    devices: devices?.devices ?? null, firstLoginAt: devices?.firstLoginAt ?? null, lastLoginAt: devices?.lastLoginAt ?? null,
+    devices: devices?.devices ?? null,
     deviceCount: devices?.deviceCount ?? null, devicesStatus: devices?.status ?? null, devicesError: devices?.error || '' };
 }
 
@@ -221,22 +221,15 @@ export async function probeDevices(account, { fetchImpl, signal } = {}) {
     if (!response.ok) return { status: response.status, deviceCount: null, error: `HTTP ${response.status}` };
     if (!Array.isArray(payload?.devices)) return { status: response.status, deviceCount: null, error: '设备列表响应无效' };
     const text = value => typeof value === 'string' ? value : '';
-    const timestamp = value => typeof value === 'number' && value > 0 && Number.isFinite(value) && !Number.isNaN(new Date(value * 1000).getTime()) ? value * 1000 : null;
     const devices = payload.devices.map(device => ({
       name: text(device?.display_name) || text(device?.device_model),
       description: text(device?.human_readable_description),
       platform: text(device?.platform), osVersion: text(device?.os_version),
       current: device?.is_current_device === true,
       apps: Array.isArray(device?.app_sessions) ? device.app_sessions.map(app => text(app?.client_name)).filter(Boolean) : [],
-      createdAt: timestamp(device?.session_created_at_seconds),
-      lastLoginAt: timestamp(device?.last_signed_in_timestamp_second),
       location: [device?.last_signed_in_city, device?.last_signed_in_region_code, device?.last_signed_in_country].map(text).filter(Boolean).join(', '),
     }));
-    const firstTimes = devices.map(device => device.createdAt).filter(value => value != null);
-    const lastTimes = devices.map(device => device.lastLoginAt).filter(value => value != null);
-    return { status: response.status, deviceCount: devices.length, devices,
-      firstLoginAt: firstTimes.length ? firstTimes.reduce((a, b) => Math.min(a, b)) : null,
-      lastLoginAt: lastTimes.length ? lastTimes.reduce((a, b) => Math.max(a, b)) : null, error: '' };
+    return { status: response.status, deviceCount: devices.length, devices, error: '' };
   } catch (error) {
     return { status: null, deviceCount: null, error: String(error?.message || error).slice(0, 512) };
   } finally { clearTimeout(timer); }
