@@ -82,14 +82,16 @@ export async function runAllWorkspaceCodexAuth({
   flow, persistPersonal, persistBusiness, persistCookies, onPhase = () => {},
 }) {
   const result = { ok: false, phase: 'codex', sessionOk: false, personalOk: false, businessTotal: 0, businessSuccess: 0, businessErrors: [] };
+  let first;
+  let storage;
   try {
     onPhase('codex');
-    const first = await flow.run();
+    first = await flow.run();
     const firstToken = typeof first?.refresh_token === 'string' ? first.refresh_token.trim() : '';
     if (!firstToken) throw new Error('Codex 授权未返回 refresh_token');
     result.phase = 'workspace_catalog';
     onPhase('workspace_catalog');
-    const storage = await flow.exportCookieStorageState();
+    storage = await flow.exportCookieStorageState();
     // Redirect-only grants can still have their catalog in the auth cookies.
     const catalog = flow.discoveredWorkspaces || readWorkspaceSessionPayload(JSON.parse(storage).cookies).workspaces;
     if (catalog.length === 0) throw validationError('WORKSPACE_CATALOG_UNAVAILABLE', { reason: 'EMPTY_CATALOG' });
@@ -150,6 +152,17 @@ export async function runAllWorkspaceCodexAuth({
     let failure = error;
     if (catalogMissing) failure = validationError('WORKSPACE_CATALOG_UNAVAILABLE', { reason: error.code });
     if (result.phase === 'workspace_catalog' && error?.code === 'WORKSPACE_PAGE_INVALID') failure = validationError('WORKSPACE_OWNERSHIP_UNCONFIRMED');
+    const ownershipUnknown = result.phase === 'workspace_catalog'
+      && ['WORKSPACE_CATALOG_UNAVAILABLE', 'WORKSPACE_OWNERSHIP_UNCONFIRMED'].includes(failure?.code);
+    if (ownershipUnknown && !flow.requireNonPersonal) {
+      try {
+        await persistPersonal(first);
+        await persistCookies(storage);
+        return { ...result, ok: true, phase: 'done', personalOk: true, workspaceOwnership: 'personal' };
+      } catch (persistError) {
+        failure = persistError;
+      }
+    }
     result.error = failure.message || String(failure);
     Object.assign(result, validationFailureFields(failure));
   } finally {

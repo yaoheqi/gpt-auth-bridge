@@ -164,7 +164,7 @@ test('a confirmed personal-only workspace saves once and completes without anoth
   }
 });
 
-test('ambiguous workspace ownership never writes the first RT to either account record', async () => {
+test('ambiguous workspace ownership defaults to personal unless non-personal ownership is required', async () => {
   const personal = { id: 'p', kind: 'personal' };
   const team = { id: 't', kind: 'business' };
   const cases = [
@@ -175,16 +175,21 @@ test('ambiguous workspace ownership never writes the first RT to either account 
     { catalog: [{ id: 'p', kind: 'unknown' }], returned: 'p' },
     { catalog: [personal], returned: 'unlisted' },
   ];
-  for (const { catalog, returned, selected } of cases) {
-    const { options, flow, calls } = fixture();
-    flow.discoveredWorkspaces = catalog;
-    flow.selectedWorkspaceId = selected;
-    flow.run = async () => ({ refresh_token: 'fixture', account_id: returned });
-    const result = await runAllWorkspaceCodexAuth(options);
-    assert.equal(validationFailureLabel(result), '工作区归属待确认');
-    assert.equal(result.personalOk, false);
-    assert.equal(result.businessSuccess, 0);
-    assert.deepEqual(calls, ['dispose']);
+  for (const requireNonPersonal of [false, true]) {
+    for (const { catalog, returned, selected } of cases) {
+      const { options, flow, calls } = fixture();
+      flow.requireNonPersonal = requireNonPersonal;
+      flow.discoveredWorkspaces = catalog;
+      flow.selectedWorkspaceId = selected;
+      flow.run = async () => ({ refresh_token: 'personal-rt', account_id: returned });
+      const result = await runAllWorkspaceCodexAuth(options);
+      assert.equal(result.ok, !requireNonPersonal);
+      assert.equal(result.personalOk, !requireNonPersonal);
+      assert.equal(result.businessSuccess, 0);
+      if (requireNonPersonal) assert.equal(validationFailureLabel(result), '工作区归属待确认');
+      else assert.equal(result.workspaceOwnership, 'personal');
+      assert.deepEqual(calls, requireNonPersonal ? ['dispose'] : ['save-personal', 'save-cookies', 'dispose']);
+    }
   }
 });
 
@@ -198,7 +203,7 @@ test('a subsequent workspace cannot reuse the RT already saved for the personal 
   assert.equal(calls.includes('save-business-1'), false);
 });
 
-test('an unconfirmed workspace stops at catalog verification with an allowlisted reason in either mode', async () => {
+test('an unavailable catalog only blocks login when a non-personal workspace is required', async () => {
   const cases = [
     [null, 'WORKSPACE_SESSION_MISSING', '缺少工作区会话信息'],
     [[], 'EMPTY_CATALOG', '工作区列表为空'],
@@ -217,15 +222,21 @@ test('an unconfirmed workspace stops at catalog verification with an allowlisted
         workspaceMode: 'all', requireNonPersonal,
         runAllWorkspaces: () => runAllWorkspaceCodexAuth({ ...options, onPhase: phase => phases.push(phase) }),
       });
-      assert.equal(result.ok, false);
-      assert.equal(result.phase, 'workspace_catalog');
       assert.deepEqual(phases, ['codex', 'workspace_catalog']);
-      assert.deepEqual(result.validationFailure, { code: 'WORKSPACE_CATALOG_UNAVAILABLE', retryable: false, reason });
-      assert.equal(validationFailureLabel(result), '工作区归属待确认');
-      assert.ok(validationFailureHint(result).includes(detail));
-      assert.equal(result.personalOk, false);
+      assert.equal(result.ok, !requireNonPersonal);
+      if (requireNonPersonal) {
+        assert.equal(result.phase, 'workspace_catalog');
+        assert.deepEqual(result.validationFailure, { code: 'WORKSPACE_CATALOG_UNAVAILABLE', retryable: false, reason });
+        assert.equal(validationFailureLabel(result), '工作区归属待确认');
+        assert.ok(validationFailureHint(result).includes(detail));
+      } else {
+        assert.equal(result.phase, 'done');
+        assert.equal(result.workspaceOwnership, 'personal');
+        assert.equal(result.validationFailure, undefined);
+      }
+      assert.equal(result.personalOk, !requireNonPersonal);
       assert.equal(result.businessSuccess, 0);
-      assert.deepEqual(calls, ['login', 'dispose']);
+      assert.deepEqual(calls, requireNonPersonal ? ['login', 'dispose'] : ['login', 'save-personal', 'save-cookies', 'dispose']);
     }
   }
 });
@@ -241,11 +252,10 @@ test('workspace failure does not stop the remaining workspaces or conceal partia
   assert.equal(calls.at(-1), 'dispose');
 });
 
-test('personal auth failure and missing workspace catalog fail explicitly and release the flow', async () => {
-  for (const failure of ['login', 'catalog', 'persistence']) {
+test('login and persistence failures fail explicitly and release the flow', async () => {
+  for (const failure of ['login', 'persistence']) {
     const { options, flow, calls } = fixture();
     if (failure === 'login') flow.run = async () => { throw new Error('login failed'); };
-    if (failure === 'catalog') flow.discoveredWorkspaces = null;
     if (failure === 'persistence') options.persistCookies = async () => { throw new Error('disk full'); };
     const result = await runAllWorkspaceCodexAuth(options);
     assert.equal(result.ok, false);
