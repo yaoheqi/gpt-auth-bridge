@@ -1,3 +1,4 @@
+import { OPENAI_CODEX_CLIENT_ID } from '../../../lib/openai-oauth.js';
 import { OPENAI_AGENT_AUTH_MODE, isAgentIdentityRecord } from '../../../lib/openai-agent-identity.js';
 import { decodeJwtPayload, firstNonEmpty, getNestedRecord } from '../../../lib/jwt-utils.js';
 
@@ -46,6 +47,7 @@ export function normalizeOpenAIAuthRecord(email, payload) {
     id_token: payload.id_token,
     last_refresh: new Date().toISOString(),
     refresh_token: payload.refresh_token,
+    client_id: OPENAI_CODEX_CLIENT_ID,
     type: 'codex',
     websockets: false,
   };
@@ -69,6 +71,7 @@ export function normalizeOpenAIRecordFromRefreshPayload(email, payload, fallback
     last_refresh: nowIso(),
     plan_type: firstNonEmpty(accessAuth.chatgpt_plan_type),
     refresh_token: refreshToken,
+    client_id: OPENAI_CODEX_CLIENT_ID,
     type: 'codex',
   };
 }

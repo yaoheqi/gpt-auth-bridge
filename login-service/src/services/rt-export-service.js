@@ -21,6 +21,7 @@ export function buildStoredRtExportRecord(account) {
   return {
     email: String(account?.email || '').trim(),
     access_token: accessToken,
+    client_id: clientId,
     refresh_token: refreshToken,
     id_token: String(account?.openai_id_token || '').trim(),
     account_id: accountId,
@@ -45,7 +46,7 @@ export function buildStoredBusinessRtExportRecord(account) {
   if (accountId !== workspaceId) throw new Error(`Business Codex token/workspace 不匹配: ${accountId || 'missing'} != ${workspaceId}`);
   const expiresAt = Number(claims.exp || account?.business_openai_token_expires_at || 0);
   if (!expiresAt) throw new Error('Business Codex access token 缺少 expiry');
-  return { email: String(account?.email || '').trim(), access_token: accessToken, refresh_token: refreshToken, id_token: String(account?.business_openai_id_token || '').trim(), account_id: accountId, plan_type: firstNonEmpty(auth.chatgpt_plan_type, 'business'), expired: new Date(expiresAt * 1000).toISOString(), extra: { source: 'codex-business-rt', workspace_id: workspaceId } };
+  return { email: String(account?.email || '').trim(), access_token: accessToken, client_id: clientId, refresh_token: refreshToken, id_token: String(account?.business_openai_id_token || '').trim(), account_id: accountId, plan_type: firstNonEmpty(auth.chatgpt_plan_type, 'business'), expired: new Date(expiresAt * 1000).toISOString(), extra: { source: 'codex-business-rt', workspace_id: workspaceId } };
 }
 
 export function buildStoredBusinessRtExportRecords(account) {

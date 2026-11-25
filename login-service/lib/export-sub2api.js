@@ -9,6 +9,7 @@ import {
   parseExpiredTime,
   resolveOrganizationId,
 } from './jwt-utils.js';
+import { OPENAI_CODEX_CLIENT_ID } from './openai-oauth.js';
 import { sub2ApiAccountDefaults } from './sub2api-settings.js';
 
 export const SUB2API_DEFAULT_EXPIRES_IN = 864000;
@@ -73,6 +74,7 @@ export function buildSub2ApiAccount(record, settings = {}) {
     type: 'oauth',
     credentials: {
       access_token: String(record.access_token || ''),
+      ...(record.refresh_token ? { client_id: firstNonEmpty(record.client_id, accessClaims.client_id, accessClaims.azp, OPENAI_CODEX_CLIENT_ID) } : {}),
       refresh_token: String(record.refresh_token || ''),
       id_token: String(record.id_token || ''),
       chatgpt_account_id: accountId,
