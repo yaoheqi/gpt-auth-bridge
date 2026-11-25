@@ -22,6 +22,7 @@ npm start
 
 - `HOST` 默认 `127.0.0.1`，`PORT` 默认 `4173`。
 - `PYTHON` 可指定 Python 路径；默认查找根目录 `.venv`、旧 `login-service/.venv` 和系统 PATH。
+- Codex OAuth 的 `originator` 与 User-Agent 默认按官方 Rust 客户端 0.172.0 的格式生成；如上游兼容性要求固定值，可通过 `OPENAI_CODEX_USER_AGENT` 覆盖（仅接受 1–200 个可打印 ASCII 字符）。
 - 默认出口遵循服务器 `OPENAI_PROXY_URL`，未配置时直连，不会隐式使用本机 `127.0.0.1:7890`；服务器还可设置前置代理 `PROXY_CHAIN_URL`。不再提供单独的服务器内置代理池，也不读取旧的 `APP_PROXY_POOL` / `PROXY_POOL` 环境变量。
 - 协议登录页面统一提供“默认出口”“本地代理”和“自定义代理池”三种模式；本地代理端口、代理池和模式都保存在当前浏览器，并随请求发送。默认出口兼容已有 `proxyMode: direct` 设置，服务器代理凭据仅保存在服务器配置。本地代理默认使用 `127.0.0.1:7890`，可在页面修改端口；自定义代理池为空时仍直接连接。
 - 自定义代理池支持 `hostname:port:username:password`、`socks5://username:password@host:port`、`username:password@hostname:port` 和 `hostname:port@username:password`，可混合使用，每行一个或用分号分隔。用户名、密码中的 `@`、`:`、`%` 等特殊字符需要 URL 编码。

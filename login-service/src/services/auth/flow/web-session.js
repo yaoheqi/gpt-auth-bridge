@@ -10,6 +10,7 @@ import {
 import { Cookie as defaultCookie } from 'tough-cookie';
 import { firstNonEmpty as defaultFirstNonEmpty, decodeJwtPayload } from '../../../../lib/jwt-utils.js';
 import { isInitialAuthEgressBlock as defaultIsInitialAuthEgressBlock } from '../../../../lib/proxy-config.js';
+import { safeOAuthEndpoint as defaultSafeOAuthEndpoint } from '../../../../lib/openai-oauth.js';
 import { parseOpenAiAuthErrorUrl as defaultParseOpenAiAuthErrorUrl } from '../../../lib/openai-auth-error.js';
 import { randomUUID as defaultRandomUUID } from 'crypto';
 
@@ -27,6 +28,7 @@ export function createWebSessionMethods({
   normalizeAuthContinueUrl = defaultNormalizeAuthContinueUrl,
   parseOpenAiAuthErrorUrl = defaultParseOpenAiAuthErrorUrl,
   randomUUID = defaultRandomUUID,
+  safeOAuthEndpoint = defaultSafeOAuthEndpoint,
   sleep,
 } = {}) {
   return {
@@ -262,7 +264,7 @@ export function createWebSessionMethods({
           error.code = authFailure.code;
           throw error;
         }
-        throw new Error(`ChatGPT Web 跳转未完成: status=${response.status} url=${response.url}`);
+        throw new Error(`ChatGPT Web 跳转未完成: status=${response.status} url=${safeOAuthEndpoint(response.url)}`);
       }
       return this.readChatGptAccessToken();
     },

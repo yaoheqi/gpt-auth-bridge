@@ -4,9 +4,12 @@ import {
 } from '../../../../lib/openai-auth-urls.js';
 import {
   OPENAI_CODEX_REDIRECT_URI as defaultOPENAI_CODEX_REDIRECT_URI,
+  OPENAI_CODEX_ORIGINATOR as defaultOPENAI_CODEX_ORIGINATOR,
   OPENAI_CODEX_USER_AGENT as defaultOPENAI_CODEX_USER_AGENT,
   buildAuthorizationCodeTokenBody as defaultBuildAuthorizationCodeTokenBody,
+  formatSafeOAuthErrorResponse as defaultFormatSafeOAuthErrorResponse,
   parseOpenAICallback as defaultParseOpenAICallback,
+  safeOAuthEndpoint as defaultSafeOAuthEndpoint,
 } from '../../../../lib/openai-oauth.js';
 import { isAgentIdentityRecord as defaultIsAgentIdentityRecord } from '../../../../lib/openai-agent-identity.js';
 import { normalizeOpenAIAuthRecord as defaultNormalizeOpenAIAuthRecord } from '../auth-records.js';
@@ -19,12 +22,15 @@ export function createOAuthNavigationMethods({
   AUTH_OAUTH_TOKEN_URLS,
   CHATGPT_AUTH_CALLBACK_OPENAI_URL = defaultCHATGPT_AUTH_CALLBACK_OPENAI_URL,
   OPENAI_CODEX_REDIRECT_URI = defaultOPENAI_CODEX_REDIRECT_URI,
+  OPENAI_CODEX_ORIGINATOR = defaultOPENAI_CODEX_ORIGINATOR,
   OPENAI_CODEX_USER_AGENT = defaultOPENAI_CODEX_USER_AGENT,
   buildAuthorizationCodeTokenBody = defaultBuildAuthorizationCodeTokenBody,
+  formatSafeOAuthErrorResponse = defaultFormatSafeOAuthErrorResponse,
   isAgentIdentityRecord = defaultIsAgentIdentityRecord,
   normalizeOpenAIAuthRecord = defaultNormalizeOpenAIAuthRecord,
   openOAuthPage = defaultOpenOAuthPage,
   parseOpenAICallback = defaultParseOpenAICallback,
+  safeOAuthEndpoint = defaultSafeOAuthEndpoint,
 } = {}) {
   return {
     pathOf(url) {
@@ -353,9 +359,9 @@ export function createOAuthNavigationMethods({
           continue;
         }
         if (response.url.startsWith(OPENAI_CODEX_REDIRECT_URI)) return this.extractAuthResult(response.url);
-        throw new Error(`OAuth跳转未到达callback: status=${response.status} url=${response.url}`);
+        throw new Error(`OAuth跳转未到达callback: status=${response.status} url=${safeOAuthEndpoint(response.url)}`);
       }
-      throw new Error(`OAuth跳转次数过多，最后停在: ${currentURL}`);
+      throw new Error(`OAuth跳转次数过多，最后停在: ${safeOAuthEndpoint(currentURL)}`);
     },
 
     async exchangeCodeForToken(code) {
@@ -364,20 +370,33 @@ export function createOAuthNavigationMethods({
       let lastError = '';
       for (const tokenURL of AUTH_OAUTH_TOKEN_URLS) {
         const body = buildAuthorizationCodeTokenBody(code, this.codeVerifier, OPENAI_CODEX_REDIRECT_URI);
-        const response = await this.fetch(tokenURL, {
-          method: 'POST',
-          headers: {
-            accept: 'application/json',
-            'content-type': 'application/x-www-form-urlencoded',
-            'user-agent': OPENAI_CODEX_USER_AGENT,
-          },
-          body,
-        });
-        if (!response.ok) {
-          lastError = `endpoint=${tokenURL} ${await this.formatErrorResponse(response)}`;
+        let response;
+        try {
+          response = await this.fetch(tokenURL, {
+            method: 'POST',
+            headers: {
+              accept: 'application/json',
+              'content-type': 'application/x-www-form-urlencoded',
+              originator: OPENAI_CODEX_ORIGINATOR,
+              'user-agent': OPENAI_CODEX_USER_AGENT,
+            },
+            body,
+          });
+        } catch {
+          lastError = `endpoint=${safeOAuthEndpoint(tokenURL)} network_error`;
           continue;
         }
-        const payload = await response.json();
+        if (!response.ok) {
+          lastError = `endpoint=${safeOAuthEndpoint(tokenURL)} ${await formatSafeOAuthErrorResponse(response)}`;
+          continue;
+        }
+        let payload;
+        try {
+          payload = await response.json();
+        } catch {
+          lastError = `endpoint=${safeOAuthEndpoint(tokenURL)} HTTP ${response.status} error=invalid_response`;
+          continue;
+        }
         const record = normalizeOpenAIAuthRecord(this.account.email, payload);
         if (this.requireNonPersonal && record.account_id !== this.selectedWorkspaceId) throw new Error('返回的 RT 不属于所选非个人工作区');
         return record;
