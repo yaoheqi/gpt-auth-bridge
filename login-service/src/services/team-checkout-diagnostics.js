@@ -34,12 +34,20 @@ export function checkoutResponseDiagnostics(response, text, data, context = {}) 
 export function checkoutNetworkDiagnostics(error, context = {}) {
   let networkCode;
   let proxyAuthentication = false;
+  let proxyStatus;
   let tlsFailure = false;
   let current = error;
   for (let depth = 0; current && depth < 6; depth += 1, current = current.cause) {
     if (!networkCode && NETWORK_CODES.has(current.code)) networkCode = current.code;
-    if (current.status === 407 || current.statusCode === 407 || /Proxy Authentication Required|HTTP\s*407/i.test(current.message || '')) proxyAuthentication = true;
+    const message = String(current.message || '');
+    const connectStatus = Number(message.match(/CONNECT tunnel failed, response\s+(\d{3})/i)?.[1] || 0);
+    const proxyAuthRequired = /Proxy Authentication Required|HTTP\s*407/i.test(message);
+    const status = Number(current.status || current.statusCode || connectStatus || (proxyAuthRequired ? 407 : 0));
+    if ([403, 407].includes(status) && (status === 407 || connectStatus === status || proxyAuthRequired)) {
+      proxyAuthentication = true;
+      proxyStatus ||= status;
+    }
     if (/tls|ssl|certificate/i.test(current.code || '') || /tls|ssl|certificate/i.test(current.message || '')) tlsFailure = true;
   }
-  return safeCheckoutDiagnostics({ ...context, category: proxyAuthentication ? 'proxy_authentication' : tlsFailure ? 'tls_error' : 'network_error', networkCode });
+  return safeCheckoutDiagnostics({ ...context, category: proxyAuthentication ? 'proxy_authentication' : tlsFailure ? 'tls_error' : 'network_error', networkCode, upstreamStatus: proxyStatus });
 }

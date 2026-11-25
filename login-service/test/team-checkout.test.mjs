@@ -180,13 +180,15 @@ test('checkout distinguishes 403 verification HTML from payment API JSON without
 test('checkout preserves a safe TLS error code and identifies proxy authentication failures', async () => {
   for (const fixture of [
     { error: new TypeError('fetch failed private-value', { cause: Object.assign(new Error('private-value'), { code: 'ERR_SSL_WRONG_VERSION_NUMBER' }) }), category: 'tls_error', message: /ERR_SSL_WRONG_VERSION_NUMBER/ },
-    { error: new Error('Proxy Authentication Required (407) private-value'), category: 'proxy_authentication', message: /代理认证失败/ },
+    { error: new Error('Proxy Authentication Required (407) private-value'), category: 'proxy_authentication', status: 407, message: /代理认证失败/ },
+    { error: new Error('Failed to perform, curl: (7) CONNECT tunnel failed, response 403 private-value'), category: 'proxy_authentication', status: 403, message: /代理服务器拒绝认证.*HTTP 403/ },
   ]) {
     const transport = async () => { throw fixture.error; };
     transport.dispose = async () => {};
     await assert.rejects(generateTeamCheckout({ ...input, proxyMode: 'custom', proxyUrl: 'proxy.example:8080' }, { createProxyFetch: () => transport }), error => {
       assert.equal(error.code, 'CHECKOUT_NETWORK_ERROR');
       assert.equal(error.diagnostics.category, fixture.category);
+      assert.equal(error.diagnostics.upstreamStatus, fixture.status);
       assert.equal(error.diagnostics.proxyConfigured, true);
       assert.match(error.message, fixture.message);
       assert.doesNotMatch(error.message + JSON.stringify(error.diagnostics), /private-value|fixture-token|proxy.example/);

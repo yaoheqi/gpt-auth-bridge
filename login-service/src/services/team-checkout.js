@@ -157,7 +157,9 @@ export async function generateTeamCheckout(input, { fetchImpl, createProxyFetch 
     const diagnostics = checkoutNetworkDiagnostics(error, diagnosticContext);
     let message = proxyUrl ? '代理连接失败，请检查代理地址、凭据及网络后重试' : '无法连接支付服务，请检查服务器网络后重试';
     if (diagnostics.category === 'tls_error') message = 'TLS 握手失败，请核对代理协议、端口及服务器代理链配置' + (diagnostics.networkCode ? '（' + diagnostics.networkCode + '）' : '');
-    if (diagnostics.category === 'proxy_authentication') message = '代理认证失败（HTTP 407），请检查代理用户名和密码';
+    if (diagnostics.category === 'proxy_authentication') message = diagnostics.upstreamStatus === 403
+      ? '代理服务器拒绝认证（HTTP 403），请检查代理用户名、密码、套餐状态或 IP 白名单'
+      : '代理认证失败（HTTP 407），请检查代理用户名和密码';
     throw checkoutError(message, 502, 'CHECKOUT_NETWORK_ERROR', diagnostics);
   } finally {
     await proxyFetch?.dispose?.().catch(() => {});
