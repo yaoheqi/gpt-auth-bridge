@@ -1301,6 +1301,7 @@ app.post('/api/v2/accounts/business-join/convert-rt', requireAdmin, async (req, 
 app.post('/api/v2/accounts/codex-auth', requireAdmin, async (req, res) => {
   try {
     await ensureDatabase();
+    const scope = String(req.body?.scope || '').toLowerCase() === 'all' ? 'all' : 'selected';
     const phoneMode = authModeToPhoneMode(getAuthMode());
     const force = Boolean(req.body?.force);
     const reuseStoredSession = req.body?.reuseStoredSession !== false;

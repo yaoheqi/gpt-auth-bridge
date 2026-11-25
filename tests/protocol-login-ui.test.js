@@ -113,6 +113,16 @@ test('protocol login UI exposes Session and all-workspace RT modes with Sub2 pus
   assert.match(workflow, /全部流程完成：成功 \$\{pipeline\.success \|\| 0\}/);
 });
 
+test('direct Codex auth route normalizes request scope before selecting accounts', async () => {
+  const source = await fs.readFile(path.join(__dirname, '..', 'login-service', 'server.js'), 'utf8');
+  const start = source.indexOf("app.post('/api/v2/accounts/codex-auth'");
+  const end = source.indexOf("app.post('/api/v2/accounts/session-codex-rt'", start);
+  assert.ok(start >= 0 && end > start, 'Codex auth route must exist');
+  const route = source.slice(start, end);
+  assert.match(route, /const scope = String\(req\.body\?\.scope \|\| ''\)\.toLowerCase\(\) === 'all' \? 'all' : 'selected';/);
+  assert.match(route, /if \(scope === 'all'\)/);
+});
+
 test('protocol workflow applies one stable request proxy per account and explicit empty pool direct mode', async () => {
   const server = await fs.readFile(path.join(__dirname, '..', 'login-service', 'server.js'), 'utf8');
   const proxy = await fs.readFile(path.join(__dirname, '..', 'login-service', 'lib', 'proxy-config.js'), 'utf8');
